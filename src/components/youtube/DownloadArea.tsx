@@ -6,10 +6,10 @@ import { downloadAudioAction } from '@/app/download-audio.action';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { Input } from '@/components/ui/input';
+// import { Input } from '@/components/ui/input'; // No longer needed for directory
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, FolderOpen, Loader2, PlaySquare } from 'lucide-react';
+import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare } from 'lucide-react'; // Removed FolderOpen
 import { useToast } from "@/hooks/use-toast";
 import Image from 'next/image';
 
@@ -24,7 +24,7 @@ type PlaylistDownloadStatus = 'idle' | 'preparing' | 'downloading_video' | 'comp
 export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) {
   const [overallDownloadStatus, setOverallDownloadStatus] = useState<DownloadStatus>('idle');
   const [currentProgress, setCurrentProgress] = useState(0); 
-  const [downloadDirectory, setDownloadDirectory] = useState('~/Downloads/YouTubeAudio');
+  // const [downloadDirectory, setDownloadDirectory] = useState('~/Downloads/YouTubeAudio'); // Removed state
   const { toast } = useToast();
 
   // Playlist specific state
@@ -238,16 +238,16 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     }
   };
   
-  const handleChooseDirectory = () => {
-    const newPath = prompt("Enter new download directory path (simulation):", downloadDirectory);
-    if (newPath) {
-      setDownloadDirectory(newPath);
-      toast({
-        title: "Directory Updated (Mock)",
-        description: `Download path set to: ${newPath} (Note: Downloads go to your browser's default location).`,
-      });
-    }
-  };
+  // const handleChooseDirectory = () => { // Removed function
+  //   const newPath = prompt("Enter new download directory path (simulation):", downloadDirectory);
+  //   if (newPath) {
+  //     setDownloadDirectory(newPath);
+  //     toast({
+  //       title: "Directory Updated (Mock)",
+  //       description: `Download path set to: ${newPath} (Note: Downloads go to your browser's default location).`,
+  //     });
+  //   }
+  // };
 
   if (!analysisResult) return null;
 
@@ -324,14 +324,11 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         {isActionable && (
           <>
             <div className="space-y-2">
-              <Label htmlFor="download-directory" className="text-base font-medium">Download Directory (Informational)</Label>
-              <div className="flex items-center space-x-2">
-                <Input id="download-directory" value={downloadDirectory} readOnly className="flex-grow text-base" />
-                <Button variant="outline" onClick={handleChooseDirectory} className="text-accent-foreground bg-accent/80 hover:bg-accent/90">
-                  <FolderOpen className="mr-2 h-5 w-5" /> Mock Choose
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">Note: Files will download to your browser's default download location.</p>
+              {/* Removed download directory input and button */}
+              <p className="text-sm text-muted-foreground">
+                Files will be downloaded to your browser's default download location. 
+                You can typically change this in your browser's settings or when the "Save As" dialog appears (if configured in your browser).
+              </p>
             </div>
 
             {(overallDownloadStatus === 'preparing' || overallDownloadStatus === 'downloading' || isProcessingPlaylist) && (
@@ -364,7 +361,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
                     <XCircle className="h-5 w-5" />
                     <AlertTitle>Download Error</AlertTitle>
                     <AlertDescription>
-                        An error occurred. Please try again.
+                        An error occurred. Please check the error message from the server or try again.
                     </AlertDescription>
                 </Alert>
             )}

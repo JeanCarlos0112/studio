@@ -1,3 +1,7 @@
+// This server action handles the download of audio from a YouTube URL.
+// It validates the URL, fetches video information, chooses the best audio format,
+// and then streams the audio back to the client as a file download.
+
 'use server';
 
 import ytdl from 'ytdl-core';
@@ -20,7 +24,7 @@ interface DownloadError {
 export async function downloadAudioAction(youtubeUrl: string, customTitle?: string): Promise<Response | DownloadError> {
   try {
     if (!ytdl.validateURL(youtubeUrl)) {
-      return { error: 'Invalid YouTube URL provided.' };
+      return { error: 'Invalid YouTube URL provided. Please ensure it is a valid video URL.' };
     }
 
     const videoInfo = await ytdl.getInfo(youtubeUrl);
@@ -33,7 +37,7 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     });
 
     if (!format) {
-      return { error: 'No suitable audio-only format found for this video.' };
+      return { error: 'No suitable audio-only format found for this video. It might be a live stream or have other restrictions.' };
     }
     
     const audioStream = ytdl(youtubeUrl, { format: format });
@@ -42,7 +46,17 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
 
     audioStream.on('error', (err) => {
       console.error('Error during ytdl streaming:', err);
-      passThrough.destroy(err); // Destroy the passThrough stream on error
+      // Ensure the PassThrough stream is destroyed to signal the Response object about the error.
+      // This helps in propagating the error to the client if streaming fails mid-way.
+      if (!passThrough.destroyed) {
+        passThrough.destroy(err);
+      }
+    });
+
+    passThrough.on('error', (err) => {
+      // This listener is crucial if audioStream.pipe(passThrough) itself causes an error
+      // or if passThrough.destroy(err) above is called.
+      console.error('PassThrough stream error:', err);
     });
 
     const headers = new Headers();
@@ -62,8 +76,18 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
 
   } catch (error) {
     console.error('Error in downloadAudioAction:', error);
-    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred during audio download preparation.';
+    let errorMessage = error instanceof Error ? error.message : 'An unknown error occurred during audio download preparation.';
+    
+    if (error instanceof Error) {
+        if (error.message.includes('Could not extract functions') || error.message.includes('Error parsing info')) {
+            errorMessage = 'Failed to process this video. This can happen if YouTube has updated its video player, the video has specific restrictions (e.g., age-restricted, private), or it is a live stream. Please try a different video or try again later. Original error: ' + error.message;
+        } else if (error.message.includes('No suitable format found')) {
+             errorMessage = 'No suitable audio format could be found for this video. It might be a live stream, a members-only video, or have other restrictions.';
+        }
+    }
+
     // Return a JSON error object for client-side handling
     return { error: errorMessage };
   }
 }
+
