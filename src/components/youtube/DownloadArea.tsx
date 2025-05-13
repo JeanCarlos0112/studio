@@ -143,6 +143,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
 
 
       try {
+        // For playlist items, we use their own URL and title.
         const response = await downloadAudioAction(videoItem.url, videoItem.title);
         
         if (response instanceof Response) {
@@ -213,8 +214,11 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     resetStates(); // Reset before starting a new download
 
     if (analysisResult.type === 'single') {
+      // For single video, use the original youtubeUrl and the title from analysisResult.
       handleSingleVideoDownload(youtubeUrl, analysisResult.title);
     } else if (analysisResult.type === 'playlist') {
+      // For playlist, the download function iterates through videoItems which have their own URLs.
+      // The main youtubeUrl (which is a playlist URL) is not directly used for individual downloads here.
       handlePlaylistDownload();
     }
   };
@@ -403,4 +407,3 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     </Card>
   );
 }
-```
