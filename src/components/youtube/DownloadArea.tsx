@@ -1,3 +1,4 @@
+
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -8,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare } from 'lucide-react';
+import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare, RadioTower } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 import Image from 'next/image';
 
@@ -49,25 +50,25 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
 
   const handleSingleVideoDownload = async (url: string, title?: string) => {
     setOverallDownloadStatus('preparing');
-    setCurrentProgress(25); // Arbitrary progress step
+    setCurrentProgress(25); 
 
     try {
       const response = await downloadAudioAction(url, title);
-      setCurrentProgress(50); // Arbitrary progress step
+      setCurrentProgress(50); 
 
       if (response instanceof Response) {
         if (response.ok) {
-          setOverallDownloadStatus('downloading'); // Browser handles actual download progress
+          setOverallDownloadStatus('downloading'); 
           
           const blob = await response.blob();
-          setCurrentProgress(75); // Arbitrary progress step
+          setCurrentProgress(75); 
 
           const link = document.createElement('a');
           const objectUrl = window.URL.createObjectURL(blob);
           link.href = objectUrl;
           
           const contentDisposition = response.headers.get('Content-Disposition');
-          let filename = title ? `${title}.mp3` : "youtube_audio.mp3"; // Default filename
+          let filename = title ? `${sanitizeFilename(title)}.mp3` : "youtube_audio.mp3";
           if (contentDisposition) {
             const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
             if (filenameMatch && filenameMatch.length > 1) {
@@ -91,8 +92,9 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
           }, 100);
 
         } else {
-          const errorText = await response.text();
-          throw new Error(errorText || `Server error: ${response.status}`);
+          const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status}. Please try again.` }));
+          const errorMessage = errorData.error || `Server error: ${response.status}. Please try again.`;
+          throw new Error(errorMessage);
         }
       } else if (response.error) {
         throw new Error(response.error);
@@ -144,9 +146,11 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
 
 
       try {
+        // We cannot reliably check `isLive` for individual playlist items from `ytpl` output
+        // The downloadAudioAction will handle this for each item.
         const response = await downloadAudioAction(videoItem.url, videoItem.title);
         
-        if (newAbortController.signal.aborted) continue; // Check again after await
+        if (newAbortController.signal.aborted) continue; 
 
         if (response instanceof Response) {
           if (response.ok) {
@@ -156,7 +160,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
             link.href = objectUrl;
 
             const contentDisposition = response.headers.get('Content-Disposition');
-            let filename = videoItem.title ? `${videoItem.title}.mp3` : `playlist_video_${i+1}.mp3`;
+            let filename = videoItem.title ? `${sanitizeFilename(videoItem.title)}.mp3` : `playlist_video_${i+1}.mp3`;
             if (contentDisposition) {
                 const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
                 if (filenameMatch && filenameMatch.length > 1) {
@@ -173,9 +177,10 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
             }, 100);
             successfullyInitiatedCount++;
           } else {
-             const errorText = await response.text();
+             const errorData = await response.json().catch(() => ({ error: `Server error for ${videoItem.title}: ${response.status}.` }));
+             const errorText = errorData.error || `Server error for ${videoItem.title}: ${response.status}.`;
              hasFailures = true;
-             toast({ title: `Failed: ${videoItem.title}`, description: errorText || `Server error: ${response.status}`, variant: "destructive" });
+             toast({ title: `Failed: ${videoItem.title}`, description: errorText, variant: "destructive" });
           }
         } else if (response.error) {
           hasFailures = true;
@@ -186,7 +191,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         }
 
         if (analysisResult.videoItems.length > 1 && i < analysisResult.videoItems.length - 1 && !newAbortController.signal.aborted) {
-          await new Promise(resolve => setTimeout(resolve, 300)); // Small delay
+          await new Promise(resolve => setTimeout(resolve, 300)); 
         }
 
       } catch (e) {
@@ -205,11 +210,12 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     if (!newAbortController.signal.aborted) {
         if (hasFailures) {
             setPlaylistStatus('completed_with_errors');
-            setOverallDownloadStatus('error'); // Overall status reflects that not everything was perfect
+            setOverallDownloadStatus('error'); 
             toast({
                 title: "Playlist Processing Finished with Errors",
-                description: `${successfullyInitiatedCount} of ${analysisResult.videoItems.length} video downloads initiated. Some failed. Check notifications.`,
+                description: `${successfullyInitiatedCount} of ${analysisResult.videoItems.length} video downloads initiated. Some failed or were skipped (e.g. live streams). Check notifications.`,
                 variant: "destructive",
+                duration: 7000,
             });
         } else {
             setPlaylistStatus('completed');
@@ -217,21 +223,44 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
             toast({
                 title: "Playlist Downloads Processed",
                 description: `${successfullyInitiatedCount} of ${analysisResult.videoItems.length} video downloads initiated. Check browser downloads.`,
+                duration: 7000,
             });
         }
     }
     setAbortController(null);
   };
+  
+  const sanitizeFilename = (name: string): string => {
+    let saneName = name.replace(/[^a-z0-9_.\-\s]/gi, '_').replace(/\s+/g, ' ');
+    if (saneName.length > 100) {
+      saneName = saneName.substring(0, 100).trim();
+    }
+    if (saneName.endsWith('.')) {
+        saneName = saneName.substring(0, saneName.length -1) + '_';
+    }
+    if (!saneName || saneName === '.mp3') { 
+      saneName = 'downloaded_audio';
+    }
+    return saneName;
+  }
 
 
   const handleActualDownload = () => {
     if (!analysisResult || (overallDownloadStatus !== 'idle' && overallDownloadStatus !== 'completed' && overallDownloadStatus !== 'error' && overallDownloadStatus !== 'cancelled' ) ) {
-         // Prevent re-triggering if already processing, unless it's a final state.
         return;
     }
     resetStates(); 
 
     if (analysisResult.type === 'single') {
+      if (analysisResult.isLive) {
+         toast({
+            title: "Live Stream",
+            description: "Downloading live streams is not supported.",
+            variant: "destructive",
+         });
+         setOverallDownloadStatus('error'); // Set a status to reflect this
+         return;
+      }
       handleSingleVideoDownload(youtubeUrl, analysisResult.title);
     } else if (analysisResult.type === 'playlist') {
       handlePlaylistDownload();
@@ -241,15 +270,13 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const handleCancelDownload = () => {
     if (isProcessingPlaylist && abortController) {
       abortController.abort(); 
-      // The loop will detect abortion, set states, and toast.
     } else {
-        // For single video or general cancellation if not in playlist loop
-        resetStates(); // Aborts if controller exists, sets statuses to idle
-        setOverallDownloadStatus('cancelled'); // Explicitly set to cancelled
+        resetStates(); 
+        setOverallDownloadStatus('cancelled'); 
          toast({
             title: "Download Cancelled",
             description: "The download process was cancelled.",
-            variant: "destructive", // Or default, depending on preference for cancellation notice
+            variant: "default",
         });
     }
   };
@@ -271,17 +298,32 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
       </Alert>
     );
   }
+  
+  if (analysisResult.type === 'single' && analysisResult.isLive) {
+    return (
+      <Alert variant="default" className="mt-8 max-w-2xl mx-auto shadow-md bg-amber-100 border-amber-500 text-amber-700 dark:bg-amber-900 dark:border-amber-600 dark:text-amber-300">
+        <RadioTower className="h-5 w-5" />
+        <AlertTitle>Live Stream Detected</AlertTitle>
+        <AlertDescription>
+          The provided URL is for a live stream. Downloading live streams as complete audio files is not currently supported. Only regular, non-live videos can be downloaded.
+        </AlertDescription>
+      </Alert>
+    );
+  }
 
-  const isActionable = analysisResult.type === 'single' || (analysisResult.type === 'playlist' && (analysisResult.videoItems?.length ?? 0) > 0);
+
+  const isActionable = (analysisResult.type === 'single' && !analysisResult.isLive) || (analysisResult.type === 'playlist' && (analysisResult.videoItems?.length ?? 0) > 0);
   
   let contentDisplayTitle = analysisResult.title || 'Content Analysis';
   let IconComponent = AlertCircle; 
   let displayDescription = "Ready to extract audio.";
 
   if (analysisResult.type === 'single') {
-    IconComponent = FileVideo;
-    contentDisplayTitle = analysisResult.title || 'Single Video Detected';
-    displayDescription = "Ready to extract audio from this video.";
+    IconComponent = analysisResult.isLive ? RadioTower : FileVideo;
+    contentDisplayTitle = analysisResult.title || (analysisResult.isLive ? 'Live Stream' : 'Single Video Detected');
+    displayDescription = analysisResult.isLive 
+      ? "This is a live stream. Live streams cannot be downloaded directly." 
+      : "Ready to extract audio from this video.";
   } else if (analysisResult.type === 'playlist') {
     IconComponent = ListVideo;
     contentDisplayTitle = analysisResult.title || 'Playlist Detected';
@@ -317,7 +359,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
               width={400} 
               height={225} 
               className="rounded-md mx-auto mb-4 object-cover aspect-video" 
-              unoptimized={!!analysisResult.thumbnailUrl} // Use unoptimized if it's a real YT thumbnail
+              unoptimized={!!analysisResult.thumbnailUrl} 
             />
             {analysisResult.type === 'playlist' && analysisResult.videoItems && analysisResult.videoItems.length > 0 && (
                 <div className="mt-2 text-sm text-muted-foreground">
@@ -333,7 +375,6 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
             <div className="space-y-2">
               <p className="text-sm text-muted-foreground">
                 Files will be downloaded to your browser's default download location. 
-                You can typically change this in your browser's settings or when the "Save As" dialog appears (if configured in your browser).
               </p>
             </div>
 
@@ -367,7 +408,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
                     <XCircle className="h-5 w-5" />
                     <AlertTitle>Download Error</AlertTitle>
                     <AlertDescription>
-                        An error occurred during the download process. Some files may not have downloaded. Please check notifications for details.
+                        An error occurred during the download process. Some files may not have downloaded or were skipped (e.g. live streams). Please check notifications for details.
                     </AlertDescription>
                 </Alert>
             )}
@@ -385,11 +426,11 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
       </CardContent>
       {isActionable && (
         <CardFooter className="flex flex-col sm:flex-row justify-end space-y-2 sm:space-y-0 sm:space-x-3 pt-6">
-          {!isProcessing && (
+          {!isProcessing && (overallDownloadStatus === 'idle' || overallDownloadStatus === 'completed' || overallDownloadStatus === 'error' || overallDownloadStatus === 'cancelled') && (
             <Button 
               onClick={handleActualDownload} 
               className="w-full sm:w-auto bg-accent hover:bg-accent/90 text-accent-foreground text-lg py-3"
-              disabled={isProcessing} // Redundant check, but good practice
+              disabled={isProcessing} 
             >
               <Download className="mr-2 h-5 w-5" />
               {analysisResult.type === 'single' ? 'Download Audio' : 'Download All Audios'}
@@ -410,5 +451,3 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     </Card>
   );
 }
-
-    

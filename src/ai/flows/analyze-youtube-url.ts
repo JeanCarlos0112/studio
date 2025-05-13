@@ -1,7 +1,7 @@
 // This is an AI-powered function to analyze a YouTube URL and determine its content type.
 // It identifies whether the URL points to a single video, a playlist, or mixed content.
 // It also attempts to fetch the title and thumbnail for videos and playlists, and video items for playlists.
-// - analyzeYoutubeUrl - Analyzes the given YouTube URL and returns its content type, title, thumbnail, and video items for playlists.
+// - analyzeYoutubeUrl - Analyzes the given YouTube URL and returns its content type, title, thumbnail, video items for playlists, and live status.
 // - AnalyzeYoutubeUrlInput - The input type for the analyzeYoutubeUrl function.
 // - AnalyzeYoutubeUrlOutput - The return type for the analyzeYoutubeUrl function.
 
@@ -36,6 +36,7 @@ const AnalyzeYoutubeUrlOutputSchema = z.object({
   thumbnailUrl: z.string().url().optional().describe('URL of the thumbnail, if applicable.'),
   videoItems: z.array(VideoItemSchema).optional().describe('List of video items if the URL is a playlist.'),
   playlistAuthor: z.string().optional().describe('Author of the playlist, if applicable.'),
+  isLive: z.boolean().optional().describe('Whether the content is a live stream (for single videos).'),
 });
 export type AnalyzeYoutubeUrlOutput = z.infer<typeof AnalyzeYoutubeUrlOutputSchema>;
 
@@ -93,6 +94,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
+                        outputData.isLive = info.videoDetails.isLiveContent;
                     } else {
                         outputData.type = 'unknown';
                     }
@@ -109,6 +111,8 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         duration: item.duration || undefined,
                     }));
                     outputData.type = 'playlist';
+                    // A playlist itself is not "live", individual items might be, but ytpl doesn't give that info.
+                    outputData.isLive = false; 
                 }
             } catch (playlistError) {
                 if (ytdl.validateURL(input.url)) {
@@ -117,6 +121,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
+                        outputData.isLive = info.videoDetails.isLiveContent;
                     } catch (ytdlError) {
                         console.warn(`Both ytpl and ytdl failed for ${input.url} (after playlist attempt): ${(ytdlError as Error).message}`);
                         outputData.type = 'unknown';
@@ -131,6 +136,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
             outputData.title = info.videoDetails.title;
             outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
             outputData.type = 'single';
+            outputData.isLive = info.videoDetails.isLiveContent;
         } else { 
             outputData.type = typeFromLlm !== 'single' && typeFromLlm !== 'playlist' ? typeFromLlm : 'unknown';
         }
@@ -142,6 +148,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
       outputData.thumbnailUrl = undefined;
       outputData.videoItems = undefined;
       outputData.playlistAuthor = undefined;
+      outputData.isLive = undefined;
     }
     
     if (outputData.type === 'playlist' && (!outputData.videoItems || outputData.videoItems.length === 0) && outputData.title) {
@@ -162,6 +169,10 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
         outputData.type = 'playlist';
       } else if (outputData.title) {
         outputData.type = 'single';
+        // We might not have `isLive` if it reached here through recovery logic.
+        // It's safer to leave `isLive` as undefined or attempt re-fetch if critical.
+        // For now, if type is single and we have a title, isLive might be missing.
+        // The download action will re-check `isLive` robustly.
       }
     }
 

@@ -34,6 +34,8 @@ const YTDL_REQUEST_OPTIONS = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
     },
   },
+  // Consider adding highWaterMark here if issues persist with large files, though it's for the stream itself
+  // highWaterMark: 1 << 25, // Example: 1MB buffer, apply to ytdl() call options
 };
 
 export async function downloadAudioAction(youtubeUrl: string, customTitle?: string): Promise<Response | DownloadError> {
@@ -43,13 +45,17 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     }
 
     const videoInfo = await ytdl.getInfo(youtubeUrl, YTDL_REQUEST_OPTIONS);
+
+    if (videoInfo.videoDetails.isLiveContent) {
+      return { error: `Downloading live streams as complete audio files is not currently supported. Please use a URL for a non-live video.` };
+    }
+
     const videoTitle = customTitle || videoInfo.videoDetails.title;
-    // Sanitize filename and ensure it's not empty or just ".mp3"
     let safeFilename = sanitizeFilename(videoTitle);
     if (!safeFilename.toLowerCase().endsWith('.mp3')) {
         safeFilename += '.mp3';
     }
-    if (safeFilename === '.mp3') { // If sanitizeFilename resulted in just .mp3 due to an empty/invalid title
+    if (safeFilename === '.mp3') { 
         safeFilename = `audio_${Date.now()}.mp3`;
     }
 
@@ -65,7 +71,8 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     
     const audioStream = ytdl(youtubeUrl, { 
       format: format,
-      requestOptions: YTDL_REQUEST_OPTIONS.requestOptions 
+      requestOptions: YTDL_REQUEST_OPTIONS.requestOptions,
+      highWaterMark: 1 << 25, // 1MB buffer for the stream
     });
     const passThrough = new PassThrough();
     audioStream.pipe(passThrough);
@@ -83,7 +90,7 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
 
     const headers = new Headers();
     headers.set('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
-    headers.set('Content-Type', format.mimeType ? (format.mimeType.startsWith('audio/mp4') ? 'audio/mp4' : format.mimeType) : 'audio/mpeg');
+    headers.set('Content-Type', format.mimeType ? (format.mimeType.startsWith('audio/mp4') ? 'audio/mp4' : format.mimeType) : 'audio/mpeg'); // Common fallback
     if (format.contentLength) {
       headers.set('Content-Length', format.contentLength);
     }
@@ -100,7 +107,7 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     if (error instanceof Error) {
         const lowercaseErrorMessage = typeof error.message === 'string' ? error.message.toLowerCase() : '';
         if (lowercaseErrorMessage.includes('could not extract functions') || lowercaseErrorMessage.includes('error parsing info') || lowercaseErrorMessage.includes('failed to get video info') || lowercaseErrorMessage.includes('signature')) {
-            errorMessage = `Failed to process this video (URL: ${youtubeUrl}). This error (Original: ${error.message}) commonly occurs when YouTube updates its video player structure, or the video has specific restrictions (e.g., age-restricted, private). The library used for downloading ('ytdl-core') may need an update to adapt to these changes. Please try a different video or check back later.`;
+            errorMessage = `Failed to process this video (URL: ${youtubeUrl}). This error (Original: ${error.message}) commonly occurs when YouTube updates its video player structure, the video has specific restrictions (e.g., age-restricted, private), or the video is a live stream not yet fully processed by YouTube. The library used for downloading ('ytdl-core') may need an update to adapt to these changes. Please try a different video or check back later.`;
         } else if (lowercaseErrorMessage.includes('no suitable format found')) {
              errorMessage = `No suitable audio format could be found for this video (URL: ${youtubeUrl}). It might be a live stream, a members-only video, or have other restrictions. Original error: ${error.message}`;
         } else if (lowercaseErrorMessage.includes('unavailable video') || lowercaseErrorMessage.includes('video is unavailable')) {
