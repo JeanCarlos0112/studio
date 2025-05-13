@@ -6,28 +6,25 @@ import { downloadAudioAction } from '@/app/download-audio.action';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-// import { Input } from '@/components/ui/input'; // No longer needed for directory
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare } from 'lucide-react'; // Removed FolderOpen
+import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 import Image from 'next/image';
 
 interface DownloadAreaProps {
   analysisResult: AnalysisResult | null;
-  youtubeUrl: string; // The original URL submitted by the user
+  youtubeUrl: string; 
 }
 
 type DownloadStatus = 'idle' | 'preparing' | 'downloading' | 'completed' | 'error' | 'cancelled';
-type PlaylistDownloadStatus = 'idle' | 'preparing' | 'downloading_video' | 'completed' | 'error' | 'cancelled';
+type PlaylistDownloadStatus = 'idle' | 'preparing' | 'downloading_video' | 'completed_with_errors' | 'completed' | 'error' | 'cancelled';
 
 export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) {
   const [overallDownloadStatus, setOverallDownloadStatus] = useState<DownloadStatus>('idle');
   const [currentProgress, setCurrentProgress] = useState(0); 
-  // const [downloadDirectory, setDownloadDirectory] = useState('~/Downloads/YouTubeAudio'); // Removed state
   const { toast } = useToast();
 
-  // Playlist specific state
   const [playlistStatus, setPlaylistStatus] = useState<PlaylistDownloadStatus>('idle');
   const [playlistFileProgress, setPlaylistFileProgress] = useState<{ current: number; total: number; title: string } | null>(null);
   const [isProcessingPlaylist, setIsProcessingPlaylist] = useState(false);
@@ -52,24 +49,25 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
 
   const handleSingleVideoDownload = async (url: string, title?: string) => {
     setOverallDownloadStatus('preparing');
-    setCurrentProgress(25);
+    setCurrentProgress(25); // Arbitrary progress step
 
     try {
       const response = await downloadAudioAction(url, title);
-      setCurrentProgress(75);
+      setCurrentProgress(50); // Arbitrary progress step
 
       if (response instanceof Response) {
         if (response.ok) {
-          setOverallDownloadStatus('downloading');
-          setCurrentProgress(100);
+          setOverallDownloadStatus('downloading'); // Browser handles actual download progress
           
           const blob = await response.blob();
+          setCurrentProgress(75); // Arbitrary progress step
+
           const link = document.createElement('a');
           const objectUrl = window.URL.createObjectURL(blob);
           link.href = objectUrl;
           
           const contentDisposition = response.headers.get('Content-Disposition');
-          let filename = title ? `${title}.mp3` : "youtube_audio.mp3";
+          let filename = title ? `${title}.mp3` : "youtube_audio.mp3"; // Default filename
           if (contentDisposition) {
             const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
             if (filenameMatch && filenameMatch.length > 1) {
@@ -89,6 +87,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
             document.body.removeChild(link);
             window.URL.revokeObjectURL(objectUrl);
             setOverallDownloadStatus('completed'); 
+            setCurrentProgress(100);
           }, 100);
 
         } else {
@@ -102,7 +101,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
       }
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-      console.error("Download error:", e);
+      console.error("Download error (single video):", e);
       setOverallDownloadStatus('error');
       setCurrentProgress(0);
       toast({
@@ -116,6 +115,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const handlePlaylistDownload = async () => {
     if (!analysisResult || !analysisResult.videoItems || analysisResult.videoItems.length === 0) {
       toast({ title: "Playlist Error", description: "No videos found in the playlist.", variant: "destructive" });
+      setOverallDownloadStatus('error');
       return;
     }
 
@@ -124,16 +124,17 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
 
     setIsProcessingPlaylist(true);
     setPlaylistStatus('preparing');
-    setOverallDownloadStatus('preparing'); // Use overall status for button state
+    setOverallDownloadStatus('preparing');
 
     let successfullyInitiatedCount = 0;
+    let hasFailures = false;
 
     for (let i = 0; i < analysisResult.videoItems.length; i++) {
       if (newAbortController.signal.aborted) {
         setPlaylistStatus('cancelled');
         setOverallDownloadStatus('cancelled');
-        toast({ title: "Playlist Download Cancelled", description: "Download process was cancelled.", variant: "destructive"});
-        break;
+        toast({ title: "Playlist Download Cancelled", description: "Download process was cancelled by user.", variant: "destructive"});
+        break; 
       }
 
       const videoItem = analysisResult.videoItems[i];
@@ -143,9 +144,10 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
 
 
       try {
-        // For playlist items, we use their own URL and title.
         const response = await downloadAudioAction(videoItem.url, videoItem.title);
         
+        if (newAbortController.signal.aborted) continue; // Check again after await
+
         if (response instanceof Response) {
           if (response.ok) {
             const blob = await response.blob();
@@ -165,8 +167,6 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
             document.body.appendChild(link);
             link.click();
             
-            // No individual toast per video to avoid spam, browser handles this.
-            
             setTimeout(() => {
                 document.body.removeChild(link);
                 window.URL.revokeObjectURL(objectUrl);
@@ -174,80 +174,86 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
             successfullyInitiatedCount++;
           } else {
              const errorText = await response.text();
+             hasFailures = true;
              toast({ title: `Failed: ${videoItem.title}`, description: errorText || `Server error: ${response.status}`, variant: "destructive" });
           }
         } else if (response.error) {
+          hasFailures = true;
           toast({ title: `Failed: ${videoItem.title}`, description: response.error, variant: "destructive" });
         } else {
+           hasFailures = true;
            toast({ title: `Failed: ${videoItem.title}`, description: 'Unexpected response from server.', variant: "destructive" });
         }
 
-        // Optional delay between downloads
-        if (analysisResult.videoItems.length > 3 && i < analysisResult.videoItems.length - 1 && !newAbortController.signal.aborted) {
-          await new Promise(resolve => setTimeout(resolve, 300));
+        if (analysisResult.videoItems.length > 1 && i < analysisResult.videoItems.length - 1 && !newAbortController.signal.aborted) {
+          await new Promise(resolve => setTimeout(resolve, 300)); // Small delay
         }
 
       } catch (e) {
         if (!newAbortController.signal.aborted) {
+            hasFailures = true;
             const errorMessage = e instanceof Error ? e.message : "Unknown error";
-            toast({ title: `Error downloading ${videoItem.title}`, description: errorMessage, variant: "destructive" });
+            console.error(`Error downloading playlist item ${videoItem.title}:`, e);
+            toast({ title: `Error processing ${videoItem.title}`, description: errorMessage, variant: "destructive" });
         }
       }
     }
     
     setIsProcessingPlaylist(false);
+    setCurrentProgress(100);
+
     if (!newAbortController.signal.aborted) {
-        setPlaylistStatus('completed');
-        setOverallDownloadStatus('completed');
-        setCurrentProgress(100);
-        toast({
-            title: "Playlist Downloads Processed",
-            description: `${successfullyInitiatedCount} of ${analysisResult.videoItems.length} video downloads initiated. Check browser downloads.`,
-        });
+        if (hasFailures) {
+            setPlaylistStatus('completed_with_errors');
+            setOverallDownloadStatus('error'); // Overall status reflects that not everything was perfect
+            toast({
+                title: "Playlist Processing Finished with Errors",
+                description: `${successfullyInitiatedCount} of ${analysisResult.videoItems.length} video downloads initiated. Some failed. Check notifications.`,
+                variant: "destructive",
+            });
+        } else {
+            setPlaylistStatus('completed');
+            setOverallDownloadStatus('completed');
+            toast({
+                title: "Playlist Downloads Processed",
+                description: `${successfullyInitiatedCount} of ${analysisResult.videoItems.length} video downloads initiated. Check browser downloads.`,
+            });
+        }
     }
     setAbortController(null);
   };
 
 
   const handleActualDownload = () => {
-    if (!analysisResult) return;
-    resetStates(); // Reset before starting a new download
+    if (!analysisResult || (overallDownloadStatus !== 'idle' && overallDownloadStatus !== 'completed' && overallDownloadStatus !== 'error' && overallDownloadStatus !== 'cancelled' ) ) {
+         // Prevent re-triggering if already processing, unless it's a final state.
+        return;
+    }
+    resetStates(); 
 
     if (analysisResult.type === 'single') {
-      // For single video, use the original youtubeUrl and the title from analysisResult.
       handleSingleVideoDownload(youtubeUrl, analysisResult.title);
     } else if (analysisResult.type === 'playlist') {
-      // For playlist, the download function iterates through videoItems which have their own URLs.
-      // The main youtubeUrl (which is a playlist URL) is not directly used for individual downloads here.
       handlePlaylistDownload();
     }
   };
 
   const handleCancelDownload = () => {
     if (isProcessingPlaylist && abortController) {
-      abortController.abort(); // This will trigger the cleanup and status update in the loop
+      abortController.abort(); 
+      // The loop will detect abortion, set states, and toast.
     } else {
-        // For single video or general cancellation
-        resetStates();
-        setOverallDownloadStatus('cancelled');
+        // For single video or general cancellation if not in playlist loop
+        resetStates(); // Aborts if controller exists, sets statuses to idle
+        setOverallDownloadStatus('cancelled'); // Explicitly set to cancelled
          toast({
             title: "Download Cancelled",
-            description: "The download process was cancelled by the user.",
-            variant: "destructive",
+            description: "The download process was cancelled.",
+            variant: "destructive", // Or default, depending on preference for cancellation notice
         });
     }
   };
   
-  // const handleChooseDirectory = () => { // Removed function
-  //   const newPath = prompt("Enter new download directory path (simulation):", downloadDirectory);
-  //   if (newPath) {
-  //     setDownloadDirectory(newPath);
-  //     toast({
-  //       title: "Directory Updated (Mock)",
-  //       description: `Download path set to: ${newPath} (Note: Downloads go to your browser's default location).`,
-  //     });
-  //   }
-  // };
 
   if (!analysisResult) return null;
 
@@ -269,7 +275,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const isActionable = analysisResult.type === 'single' || (analysisResult.type === 'playlist' && (analysisResult.videoItems?.length ?? 0) > 0);
   
   let contentDisplayTitle = analysisResult.title || 'Content Analysis';
-  let IconComponent = AlertCircle; // Default icon
+  let IconComponent = AlertCircle; 
   let displayDescription = "Ready to extract audio.";
 
   if (analysisResult.type === 'single') {
@@ -291,6 +297,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const displayThumbnailUrl = analysisResult.thumbnailUrl || `https://picsum.photos/seed/${encodeURIComponent(youtubeUrl)}/400/225`;
   const cardTitleText = analysisResult.type === 'playlist' ? `Playlist: ${contentDisplayTitle}` : contentDisplayTitle;
 
+  const isProcessing = overallDownloadStatus === 'preparing' || overallDownloadStatus === 'downloading' || isProcessingPlaylist;
 
   return (
     <Card className="mt-8 w-full max-w-2xl mx-auto shadow-lg">
@@ -310,7 +317,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
               width={400} 
               height={225} 
               className="rounded-md mx-auto mb-4 object-cover aspect-video" 
-              unoptimized={!!analysisResult.thumbnailUrl} 
+              unoptimized={!!analysisResult.thumbnailUrl} // Use unoptimized if it's a real YT thumbnail
             />
             {analysisResult.type === 'playlist' && analysisResult.videoItems && analysisResult.videoItems.length > 0 && (
                 <div className="mt-2 text-sm text-muted-foreground">
@@ -324,22 +331,21 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         {isActionable && (
           <>
             <div className="space-y-2">
-              {/* Removed download directory input and button */}
               <p className="text-sm text-muted-foreground">
                 Files will be downloaded to your browser's default download location. 
                 You can typically change this in your browser's settings or when the "Save As" dialog appears (if configured in your browser).
               </p>
             </div>
 
-            {(overallDownloadStatus === 'preparing' || overallDownloadStatus === 'downloading' || isProcessingPlaylist) && (
+            {isProcessing && (
               <div className="space-y-2">
                 <Label className="text-base font-medium">Progress</Label>
                 <Progress value={currentProgress} className="w-full h-4" />
                 <p className="text-sm text-muted-foreground text-center">
                   {isProcessingPlaylist && playlistFileProgress 
                     ? `Processing: ${playlistFileProgress.current} of ${playlistFileProgress.total} - "${playlistFileProgress.title}" (${Math.round(currentProgress)}%)`
-                    : overallDownloadStatus === 'preparing' ? `Preparing: ${Math.round(currentProgress)}%` 
-                    : overallDownloadStatus === 'downloading' ? 'Download initiated by browser...'
+                    : overallDownloadStatus === 'preparing' ? `Preparing download... ${Math.round(currentProgress)}%` 
+                    : overallDownloadStatus === 'downloading' ? 'Download initiated, waiting for browser...'
                     : 'Processing...'
                   }
                 </p>
@@ -361,7 +367,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
                     <XCircle className="h-5 w-5" />
                     <AlertTitle>Download Error</AlertTitle>
                     <AlertDescription>
-                        An error occurred. Please check the error message from the server or try again.
+                        An error occurred during the download process. Some files may not have downloaded. Please check notifications for details.
                     </AlertDescription>
                 </Alert>
             )}
@@ -379,17 +385,17 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
       </CardContent>
       {isActionable && (
         <CardFooter className="flex flex-col sm:flex-row justify-end space-y-2 sm:space-y-0 sm:space-x-3 pt-6">
-          { (overallDownloadStatus === 'idle' || overallDownloadStatus === 'completed' || overallDownloadStatus === 'error' || overallDownloadStatus === 'cancelled') && (
+          {!isProcessing && (
             <Button 
               onClick={handleActualDownload} 
               className="w-full sm:w-auto bg-accent hover:bg-accent/90 text-accent-foreground text-lg py-3"
-              disabled={overallDownloadStatus === 'preparing' || overallDownloadStatus === 'downloading' || isProcessingPlaylist}
+              disabled={isProcessing} // Redundant check, but good practice
             >
-              {(overallDownloadStatus === 'preparing' || isProcessingPlaylist) ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <Download className="mr-2 h-5 w-5" />}
-              {(overallDownloadStatus === 'preparing' || isProcessingPlaylist) ? 'Processing...' : (analysisResult.type === 'single' ? 'Download Audio' : 'Download All Audios')}
+              <Download className="mr-2 h-5 w-5" />
+              {analysisResult.type === 'single' ? 'Download Audio' : 'Download All Audios'}
             </Button>
           )}
-          {(overallDownloadStatus === 'preparing' || overallDownloadStatus === 'downloading' || isProcessingPlaylist) && overallDownloadStatus !== 'completed' && overallDownloadStatus !== 'cancelled' && (
+          {isProcessing && (
             <Button 
               variant="destructive" 
               onClick={handleCancelDownload} 
@@ -404,3 +410,5 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     </Card>
   );
 }
+
+    
