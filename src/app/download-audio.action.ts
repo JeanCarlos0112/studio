@@ -14,6 +14,13 @@ const sanitizeFilename = (name: string): string => {
   if (saneName.length > 100) {
     saneName = saneName.substring(0, 100).trim();
   }
+  // Ensure it doesn't end with a dot, which can be problematic on some OS
+  if (saneName.endsWith('.')) {
+      saneName = saneName.substring(0, saneName.length -1) + '_';
+  }
+  if (!saneName || saneName === '.mp3') { // Handle empty or only extension names
+    saneName = 'downloaded_audio.mp3';
+  }
   return saneName;
 }
 
@@ -29,7 +36,15 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
 
     const videoInfo = await ytdl.getInfo(youtubeUrl);
     const videoTitle = customTitle || videoInfo.videoDetails.title;
-    const safeFilename = sanitizeFilename(videoTitle) + '.mp3'; // Suggest .mp3 extension
+    // Sanitize filename and ensure it's not empty or just ".mp3"
+    let safeFilename = sanitizeFilename(videoTitle);
+    if (!safeFilename.toLowerCase().endsWith('.mp3')) {
+        safeFilename += '.mp3';
+    }
+    if (safeFilename === '.mp3') { // If sanitizeFilename resulted in just .mp3 due to an empty/invalid title
+        safeFilename = `audio_${Date.now()}.mp3`;
+    }
+
 
     const format = ytdl.chooseFormat(videoInfo.formats, {
       quality: 'highestaudio',
@@ -37,7 +52,7 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     });
 
     if (!format) {
-      return { error: 'No suitable audio-only format found for this video. It might be a live stream or have other restrictions.' };
+      return { error: `No suitable audio-only format found for this video (${videoTitle}). It might be a live stream or have other restrictions.` };
     }
     
     const audioStream = ytdl(youtubeUrl, { format: format });
@@ -45,49 +60,46 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     audioStream.pipe(passThrough);
 
     audioStream.on('error', (err) => {
-      console.error('Error during ytdl streaming:', err);
-      // Ensure the PassThrough stream is destroyed to signal the Response object about the error.
-      // This helps in propagating the error to the client if streaming fails mid-way.
+      console.error(`[downloadAudioAction] Error during ytdl streaming for URL ${youtubeUrl}, Title: ${videoTitle}:`, err);
       if (!passThrough.destroyed) {
         passThrough.destroy(err);
       }
     });
 
     passThrough.on('error', (err) => {
-      // This listener is crucial if audioStream.pipe(passThrough) itself causes an error
-      // or if passThrough.destroy(err) above is called.
-      console.error('PassThrough stream error:', err);
+      console.error(`[downloadAudioAction] PassThrough stream error for URL ${youtubeUrl}, Title: ${videoTitle}:`, err);
     });
 
     const headers = new Headers();
     headers.set('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
-    // Use the MIME type from the selected format, or default to octet-stream
-    headers.set('Content-Type', format.mimeType || 'application/octet-stream');
-    // If the format has a known content length, set it. This helps the browser.
+    headers.set('Content-Type', format.mimeType || 'audio/mpeg'); // Default to audio/mpeg for .mp3
     if (format.contentLength) {
       headers.set('Content-Length', format.contentLength);
     }
     
-    // For Server Actions, returning a Response object is the way to stream data/files.
-    // The PassThrough stream is a ReadableStream.
     return new Response(passThrough as unknown as ReadableStream, {
       headers: headers,
     });
 
   } catch (error) {
-    console.error('Error in downloadAudioAction:', error);
-    let errorMessage = error instanceof Error ? error.message : 'An unknown error occurred during audio download preparation.';
+    console.error(`Error in downloadAudioAction for URL "${youtubeUrl}":`, error);
+    let errorMessage: string;
     
     if (error instanceof Error) {
-        if (error.message.includes('Could not extract functions') || error.message.includes('Error parsing info')) {
-            errorMessage = 'Failed to process this video. This can happen if YouTube has updated its video player, the video has specific restrictions (e.g., age-restricted, private), or it is a live stream. Please try a different video or try again later. Original error: ' + error.message;
-        } else if (error.message.includes('No suitable format found')) {
-             errorMessage = 'No suitable audio format could be found for this video. It might be a live stream, a members-only video, or have other restrictions.';
+        const lowercaseErrorMessage = typeof error.message === 'string' ? error.message.toLowerCase() : '';
+        if (lowercaseErrorMessage.includes('could not extract functions') || lowercaseErrorMessage.includes('error parsing info') || lowercaseErrorMessage.includes('failed to get video info')) {
+            errorMessage = `Failed to process this video (URL: ${youtubeUrl}). This often occurs when YouTube updates its video player, the video has specific restrictions (e.g., age-restricted, private, members-only), or it's a live stream. The library used for downloading may need an update to adapt. Please try a different video or check back later. Original error: ${error.message}`;
+        } else if (lowercaseErrorMessage.includes('no suitable format found')) {
+             errorMessage = `No suitable audio format could be found for this video (URL: ${youtubeUrl}). It might be a live stream, a members-only video, or have other restrictions. Original error: ${error.message}`;
+        } else if (lowercaseErrorMessage.includes('unavailable video') || lowercaseErrorMessage.includes('video is unavailable')) {
+            errorMessage = `This video (URL: ${youtubeUrl}) is unavailable. It might be private, deleted, or region-restricted. Original error: ${error.message}`;
         }
+         else {
+            errorMessage = `An error occurred while processing ${youtubeUrl}: ${error.message}`;
+        }
+    } else {
+        errorMessage = `An unknown error occurred while preparing the audio download for ${youtubeUrl}. Details: ${String(error)}`;
     }
-
-    // Return a JSON error object for client-side handling
     return { error: errorMessage };
   }
 }
-
