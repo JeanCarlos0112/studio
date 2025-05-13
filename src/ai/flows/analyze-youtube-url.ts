@@ -62,6 +62,15 @@ const analyzeYoutubeUrlPrompt = ai.definePrompt({
   }
 });
 
+const COMMON_REQUEST_OPTIONS = {
+  requestOptions: {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    },
+  },
+};
+
+
 const analyzeYoutubeUrlFlow = ai.defineFlow(
   {
     name: 'analyzeYoutubeUrlFlow',
@@ -75,14 +84,12 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
     let outputData: AnalyzeYoutubeUrlOutput = { type: typeFromLlm };
 
     try {
-        if (ytpl.validateID(input.url) || input.url.includes('list=')) { // Prioritize playlist check if it looks like one
+        if (ytpl.validateID(input.url) || input.url.includes('list=')) { 
             try {
                 const playlistId = await ytpl.getPlaylistID(input.url);
                 if (!ytpl.validateID(playlistId)) {
-                     // If getPlaylistID returns something that isn't a valid ID (e.g. from a malformed URL)
-                     // or if the original URL was not a valid playlist ID itself.
-                    if (ytdl.validateURL(input.url)) { // Try as single video
-                        const info = await ytdl.getInfo(input.url);
+                    if (ytdl.validateURL(input.url)) { 
+                        const info = await ytdl.getInfo(input.url, COMMON_REQUEST_OPTIONS);
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
@@ -90,7 +97,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         outputData.type = 'unknown';
                     }
                 } else {
-                    const playlistInfo = await ytpl(playlistId, { limit: Infinity });
+                    const playlistInfo = await ytpl(playlistId, { limit: Infinity, ...COMMON_REQUEST_OPTIONS });
                     outputData.title = playlistInfo.title;
                     outputData.thumbnailUrl = playlistInfo.thumbnails?.[0]?.url;
                     outputData.playlistAuthor = playlistInfo.author?.name;
@@ -104,53 +111,58 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                     outputData.type = 'playlist';
                 }
             } catch (playlistError) {
-                // If ytpl fails, it might still be a single video URL
                 if (ytdl.validateURL(input.url)) {
                     try {
-                        const info = await ytdl.getInfo(input.url);
+                        const info = await ytdl.getInfo(input.url, COMMON_REQUEST_OPTIONS);
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
                     } catch (ytdlError) {
-                        console.warn(`Both ytpl and ytdl failed for ${input.url}: ${(ytdlError as Error).message}`);
+                        console.warn(`Both ytpl and ytdl failed for ${input.url} (after playlist attempt): ${(ytdlError as Error).message}`);
                         outputData.type = 'unknown';
                     }
                 } else {
+                     console.warn(`ytpl failed for ${input.url} and it's not a valid ytdl URL: ${(playlistError as Error).message}`);
                     outputData.type = 'unknown';
                 }
             }
-        } else if (ytdl.validateURL(input.url)) { // Check if it's a single video
-            const info = await ytdl.getInfo(input.url);
+        } else if (ytdl.validateURL(input.url)) { 
+            const info = await ytdl.getInfo(input.url, COMMON_REQUEST_OPTIONS);
             outputData.title = info.videoDetails.title;
             outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
             outputData.type = 'single';
-        } else { // If neither, use LLM's initial guess or mark unknown
+        } else { 
             outputData.type = typeFromLlm !== 'single' && typeFromLlm !== 'playlist' ? typeFromLlm : 'unknown';
         }
     } catch (e) {
       console.error(`Error during YouTube URL analysis for ${input.url}: ${(e as Error).message}`);
-      outputData.type = 'unknown';
+      // Preserve LLM type if it's mixed or unknown and we errored out, otherwise set to unknown
+      outputData.type = (typeFromLlm === 'mixed' || typeFromLlm === 'unknown') && !outputData.title && !outputData.videoItems?.length ? typeFromLlm : 'unknown';
       outputData.title = undefined;
       outputData.thumbnailUrl = undefined;
       outputData.videoItems = undefined;
       outputData.playlistAuthor = undefined;
     }
     
-    // Final validation based on parsing results
-    if (outputData.type === 'playlist' && (!outputData.videoItems || outputData.videoItems.length === 0)) {
-        // If it was identified as a playlist but has no items, it might be an error or an empty playlist.
-        // Consider if an empty playlist should be 'playlist' or 'unknown'. For now, keep 'playlist'.
-        // If title is missing for a playlist, it's more likely an error
-        if (!outputData.title) outputData.type = 'unknown';
+    if (outputData.type === 'playlist' && (!outputData.videoItems || outputData.videoItems.length === 0) && outputData.title) {
+        // If it was identified as a playlist by ytpl, has a title, but no items,
+        // it's an empty playlist. This is valid.
+    } else if (outputData.type === 'playlist' && (!outputData.title || !outputData.videoItems || outputData.videoItems.length === 0)){
+        // If it's a playlist but lacks title or items (and wasn't an empty playlist with title), then mark unknown
+        outputData.type = 'unknown';
     }
+
+
     if (outputData.type === 'single' && !outputData.title) {
-        outputData.type = 'unknown'; // Single video must have a title
+        outputData.type = 'unknown'; 
     }
+    
     if (outputData.type === 'unknown' && (outputData.title || (outputData.videoItems && outputData.videoItems.length > 0))) {
-        // If it's unknown but we have data, something is inconsistent. This case should ideally not be reached.
-        console.warn(`URL ${input.url} typed as unknown but metadata was found. Re-evaluating.`);
-        if (outputData.videoItems && outputData.videoItems.length > 0) outputData.type = 'playlist';
-        else if (outputData.title) outputData.type = 'single';
+      if(outputData.videoItems && outputData.videoItems.length > 0) {
+        outputData.type = 'playlist';
+      } else if (outputData.title) {
+        outputData.type = 'single';
+      }
     }
 
     return outputData;
