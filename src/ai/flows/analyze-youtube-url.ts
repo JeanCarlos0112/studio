@@ -64,18 +64,17 @@ const analyzeYoutubeUrlPrompt = ai.definePrompt({
   }
 });
 
+const UPDATED_YTDL_REQUEST_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
+};
+
 const COMMON_REQUEST_OPTIONS_FOR_GET_INFO = {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
+    headers: UPDATED_YTDL_REQUEST_HEADERS,
 };
 
 const COMMON_YTPL_REQUEST_OPTIONS = {
-    headers: { // ytpl expects headers directly under requestOptions
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
+    headers: UPDATED_YTDL_REQUEST_HEADERS,
 };
 
 
@@ -177,4 +176,3 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
     return outputData;
   }
 );
-

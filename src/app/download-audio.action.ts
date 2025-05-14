@@ -38,8 +38,8 @@ interface DownloadError {
   error: string;
 }
 
-const YTDL_REQUEST_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+const UPDATED_YTDL_REQUEST_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
     'Accept-Language': 'en-US,en;q=0.9',
 };
 
@@ -102,10 +102,10 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
 
   let videoInfo: YtdlVideoInfo;
   try {
-    videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: { headers: YTDL_REQUEST_HEADERS }, lang: 'en' });
-  } catch (infoError) {
+    videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: { headers: UPDATED_YTDL_REQUEST_HEADERS }, lang: 'en' });
+  } catch (infoError: any) {
     await logDetailedError(infoError, `ytdl.getInfo for ${title}`, youtubeUrl);
-    throw new Error(`Failed to get video info for "${title}": ${(infoError as Error).message}`);
+    throw new Error(`Failed to get video info for "${title}": ${infoError.message || 'Unknown ytdl.getInfo error'}`);
   }
   
   if (videoInfo.videoDetails.isLiveContent) {
@@ -136,7 +136,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
 
   const videoStream = ytdl(youtubeUrl, {
     format: chosenFormat,
-    requestOptions: { headers: YTDL_REQUEST_HEADERS },
+    requestOptions: { headers: UPDATED_YTDL_REQUEST_HEADERS },
     highWaterMark: YTDL_HIGH_WATER_MARK,
   });
   
@@ -147,36 +147,37 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
     fileWriteStream.on('finish', resolve);
     fileWriteStream.on('error', async (err) => {
         await logDetailedError(err, `WriteStream error during video download for ${title}`, youtubeUrl, videoInfo, chosenFormat);
-        reject(new Error(`Failed to write video file for "${title}": ${err.message}`));
+        reject(new Error(`Failed to write video file for "${title}": ${err.message || 'WriteStream error'}`));
     });
     videoStream.on('error', async (err) => {
         await logDetailedError(err, `ytdl stream error during video download for ${title}`, youtubeUrl, videoInfo, chosenFormat);
         if (!fileWriteStream.destroyed) {
             fileWriteStream.destroy(); 
         }
-        reject(new Error(`Failed to download video stream for "${title}": ${err.message}`));
+        reject(new Error(`Failed to download video stream for "${title}": ${err.message || 'ytdl stream error'}`));
     });
   });
 
-  let ffmpegCommand: Ffmpeg.FfmpegCommand | null = null;
   try {
     await new Promise<void>((resolve, reject) => {
-      ffmpegCommand = Ffmpeg(tempVideoPath)
+      Ffmpeg(tempVideoPath)
         .noVideo() 
         .audioCodec('libmp3lame')
         .audioBitrate('192k')
         .toFormat('mp3')
-        .on('error', async (err, stdout, stderr) => {
-          const ffmpegError = new Error(`FFmpeg conversion failed for "${title}": ${err.message}`);
+        .on('error', async (err: any, stdout: string, stderr: string) => {
+          const ffmpegErrorMessage = err.message || 'FFmpeg conversion error';
+          const ffmpegError = new Error(`FFmpeg conversion failed for "${title}": ${ffmpegErrorMessage}`);
           (ffmpegError as any).stdErr = stderr; 
-          await logDetailedError(ffmpegError, `FFmpeg conversion for ${title}`, youtubeUrl, videoInfo, chosenFormat, {tempVideoPath, tempMp3Path});
+          await logDetailedError(ffmpegError, `FFmpeg conversion for ${title}`, youtubeUrl, videoInfo, chosenFormat, {tempVideoPath, tempMp3Path, ffmpegStdout: stdout, ffmpegStderr: stderr});
           reject(ffmpegError);
         })
         .on('end', () => resolve())
         .save(tempMp3Path);
     });
-  } catch(error) {
-    throw error;
+  } catch(error: any) {
+     // error is already logged by the .on('error') handler with more details
+    throw new Error(`FFmpeg processing failed for "${title}": ${error.message || 'Unknown FFmpeg error'}`);
   }
   
   await fsp.unlink(tempVideoPath).catch(err => console.warn(`Could not delete temp video file ${tempVideoPath}: ${err.message}`));
@@ -199,16 +200,17 @@ export async function downloadAudioAction(
       const playlistName = sanitizeFilename(playlistTitle || 'youtube_playlist');
 
       for (let i = 0; i < playlistItems.length; i++) {
-        // If the main action is cancelled by Next.js (due to client abort), this loop should terminate.
         const item = playlistItems[i];
         try {
           const mp3Path = await downloadAndConvertToMp3(item.url, item.title, tempDir);
           const mp3Data = await fsp.readFile(mp3Path);
           zip.file(`${sanitizeFilename(item.title)}.mp3`, mp3Data);
           await fsp.unlink(mp3Path).catch(e => console.warn(`Failed to clean up ${mp3Path}: ${e.message}`));
-        } catch (itemError) {
-          console.warn(`Skipping playlist item "${item.title}" due to error: ${(itemError as Error).message}`);
-          zip.file(`ERROR_${sanitizeFilename(item.title)}.txt`, `Failed to process: ${(itemError as Error).message}`);
+        } catch (itemError: any) {
+          console.warn(`Skipping playlist item "${item.title}" due to error: ${itemError.message || 'Unknown error during item processing'}`);
+          // Log the detailed error for server-side inspection
+          await logDetailedError(itemError, `Processing playlist item "${item.title}"`, item.url);
+          zip.file(`ERROR_${sanitizeFilename(item.title)}.txt`, `Failed to process: ${itemError.message || 'Unknown error'}`);
         }
       }
 
@@ -229,10 +231,10 @@ export async function downloadAudioAction(
       
       let videoInfo: YtdlVideoInfo;
       try {
-        videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: { headers: YTDL_REQUEST_HEADERS }, lang: 'en' });
-      } catch (e) {
+        videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: { headers: UPDATED_YTDL_REQUEST_HEADERS }, lang: 'en' });
+      } catch (e: any) {
         await logDetailedError(e, 'ytdl.getInfo for single video', youtubeUrl);
-        return { error: `Failed to get video info: ${(e as Error).message}`};
+        return { error: `Failed to get video info: ${e.message || 'Unknown ytdl.getInfo error'}`};
       }
 
       if (videoInfo.videoDetails.isLiveContent) {
@@ -263,41 +265,36 @@ export async function downloadAudioAction(
       const response = new Response(passThrough as unknown as ReadableStream, { status: 200, headers });
       
       const cleanup = () => {
-        // Ensure stream is closed before unlinking
         if (!fileStream.destroyed) {
             fileStream.destroy();
         }
         fsp.unlink(mp3Path).catch(e => console.warn(`Could not delete temp mp3 file ${mp3Path} after stream: ${e.message}`));
       };
       
-      // Listen for the stream to end or error on the server side to cleanup.
-      // This is important because the client might receive the full file before these events fire,
-      // or the connection might drop.
       passThrough.on('end', cleanup);
-      passThrough.on('error', cleanup); // Also cleanup on error
-      passThrough.on('close', cleanup); // `close` is often more reliable for cleanup
+      passThrough.on('error', cleanup); 
+      passThrough.on('close', cleanup); 
 
 
       return response;
     }
-  } catch (error) {
+  } catch (error: any) {
     await logDetailedError(error, 'downloadAudioAction main try-catch', isPlaylist && playlistTitle ? `playlist: ${playlistTitle}`: youtubeUrl);
     let errorMessage = "An unknown error occurred.";
-    if (error instanceof Error) {
+    if (error instanceof Error) { // Standard Error object
+        errorMessage = error.message;
+    } else if (typeof error === 'string') { // Plain string error
+        errorMessage = error;
+    } else if (error && typeof error.message === 'string') { // Object with a message property
         errorMessage = error.message;
     }
     
-    // If Next.js terminates the action due to client abort, an error might be thrown here.
-    // Example: "The operation was aborted." or similar depending on Next.js version.
-    // The client side will also detect its own AbortController signal.
-    if (errorMessage.includes('aborted') || errorMessage.includes('cancel') || (error as any)?.name === 'AbortError') {
+    // Check for cancellation specifically
+    if (errorMessage.toLowerCase().includes('aborted') || errorMessage.toLowerCase().includes('cancel') || (error as any)?.name === 'AbortError') {
         return { error: `Operation cancelled: ${errorMessage}` };
     }
     return { error: errorMessage };
   } finally {
-    // This block should execute even if the action is terminated by Next.js,
-    // helping to clean up the temporary directory.
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(err => console.warn(`Failed to remove temp directory ${tempDir}: ${err.message}`));
   }
 }
-
