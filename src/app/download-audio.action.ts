@@ -1,3 +1,4 @@
+
 // This server action handles the download of audio from a YouTube URL.
 // It validates the URL, fetches video information, chooses the best audio format,
 // and then streams the audio back to the client as a file download.
@@ -28,15 +29,12 @@ interface DownloadError {
   error: string;
 }
 
-const YTDL_REQUEST_OPTIONS = {
-  requestOptions: {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9', // Added Accept-Language header
-    },
-  },
-  highWaterMark: 1 << 25, // 32MB buffer for the stream from ytdl
+const YTDL_REQUEST_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
 };
+
+const YTDL_HIGH_WATER_MARK = 1 << 25; // 32MB buffer for the stream from ytdl
 
 export async function downloadAudioAction(youtubeUrl: string, customTitle?: string): Promise<Response | DownloadError> {
   let videoInfo: YtdlVideoInfo | undefined;
@@ -47,7 +45,7 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
       return { error: 'Invalid YouTube URL provided. Please ensure it is a valid video URL.' };
     }
 
-    videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: YTDL_REQUEST_OPTIONS.requestOptions });
+    videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: { headers: YTDL_REQUEST_HEADERS }, lang: 'en' });
 
     if (videoInfo.videoDetails.isLiveContent) {
       return { error: `Downloading live streams as complete audio files is not currently supported. Please use a URL for a non-live video.` };
@@ -72,11 +70,11 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
       return { error: `No suitable audio-only format found for this video (${videoTitle}). It might be a live stream or have other restrictions.` };
     }
 
-    // ytdl-core returns a Readable stream directly
     const audioStream = ytdl(youtubeUrl, {
       format: format,
-      requestOptions: YTDL_REQUEST_OPTIONS.requestOptions,
-      highWaterMark: YTDL_REQUEST_OPTIONS.highWaterMark,
+      requestOptions: { headers: YTDL_REQUEST_HEADERS },
+      highWaterMark: YTDL_HIGH_WATER_MARK,
+      // lang: 'en' // lang option is typically for getInfo, not direct download stream
     });
 
     const passThrough = new PassThrough();
@@ -95,7 +93,7 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
 
     const headers = new Headers();
     headers.set('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
-    headers.set('Content-Type', format.mimeType ? (format.mimeType.startsWith('audio/mp4') ? 'audio/mp4' : format.mimeType) : 'audio/mpeg'); // Common fallback
+    headers.set('Content-Type', format.mimeType ? (format.mimeType.startsWith('audio/mp4') ? 'audio/mp4' : format.mimeType) : 'audio/mpeg'); 
     if (format.contentLength) {
       headers.set('Content-Length', format.contentLength);
     }
@@ -144,12 +142,12 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
                 errorProperties[key] = (error as Record<string, any>)[key];
             }
         }
-        if (Object.keys(errorProperties).length > 2) {
+        if (Object.keys(errorProperties).length > 2) { // Print if more than name & message
             const loggedProperties: Record<string, any> = {};
             for (const key in errorProperties) {
                 if (typeof errorProperties[key] !== 'object' || errorProperties[key] === null) {
                     loggedProperties[key] = errorProperties[key];
-                } else if (Object.keys(errorProperties[key]).length < 10) {
+                } else if (Object.keys(errorProperties[key]).length < 10) { // Avoid huge nested objects
                     loggedProperties[key] = errorProperties[key];
                 } else {
                     loggedProperties[key] = `[Object with ${Object.keys(errorProperties[key]).length} keys, not fully logged]`;
@@ -173,7 +171,7 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     if (error instanceof Error) {
         const lowercaseErrorMessage = typeof error.message === 'string' ? error.message.toLowerCase() : '';
         if (lowercaseErrorMessage.includes('could not extract functions') || lowercaseErrorMessage.includes('error parsing info') || lowercaseErrorMessage.includes('failed to get video info') || lowercaseErrorMessage.includes('signature decipher') || lowercaseErrorMessage.includes('throttled') || lowercaseErrorMessage.includes('no functions found') || lowercaseErrorMessage.includes('nsig') ) {
-            errorMessage = `Failed to process this video (URL: ${youtubeUrl}). This error (Original: ${error.message}) commonly occurs when YouTube updates its video player structure, the video has specific restrictions (e.g., age-restricted, private), your server's IP is temporarily throttled by YouTube, or the video is a live stream not yet fully processed. The library used ('ytdl-core') may need an update or YouTube's structure changed. Please try a different video or check back later. Adding an 'Accept-Language' header might sometimes help if the issue is region-specific, but major structural changes require a library update.`;
+            errorMessage = `Failed to process this video (URL: ${youtubeUrl}). This error (Original: "${error.message}") commonly occurs when YouTube updates its video player structure, the video has specific restrictions, or your server's IP is throttled. The library 'ytdl-core' (version in use: ${require('ytdl-core/package.json').version}) may need an update. Please try a different video or check back later. If this issue persists, consider checking the ytdl-core GitHub issue tracker for recent reports.`;
         } else if (lowercaseErrorMessage.includes('no suitable format found')) {
              errorMessage = `No suitable audio format could be found for this video (URL: ${youtubeUrl}). It might be a live stream, a members-only video, or have other restrictions. Original error: ${error.message}`;
         } else if (lowercaseErrorMessage.includes('unavailable video') || lowercaseErrorMessage.includes('video is unavailable')) {
@@ -188,3 +186,4 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     return { error: errorMessage };
   }
 }
+

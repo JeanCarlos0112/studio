@@ -1,3 +1,4 @@
+
 // This is an AI-powered function to analyze a YouTube URL and determine its content type.
 // It identifies whether the URL points to a single video, a playlist, or mixed content.
 // It also attempts to fetch the title and thumbnail for videos and playlists, and video items for playlists.
@@ -63,13 +64,18 @@ const analyzeYoutubeUrlPrompt = ai.definePrompt({
   }
 });
 
-const COMMON_REQUEST_OPTIONS = {
-  requestOptions: {
+const COMMON_REQUEST_OPTIONS_FOR_GET_INFO = {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9', // Added Accept-Language header
+      'Accept-Language': 'en-US,en;q=0.9',
     },
-  },
+};
+
+const COMMON_YTPL_REQUEST_OPTIONS = {
+    headers: { // ytpl expects headers directly under requestOptions
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
 };
 
 
@@ -91,7 +97,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                 const playlistId = await ytpl.getPlaylistID(input.url);
                 if (!ytpl.validateID(playlistId)) {
                     if (ytdl.validateURL(input.url)) {
-                        const info = await ytdl.getInfo(input.url, COMMON_REQUEST_OPTIONS);
+                        const info = await ytdl.getInfo(input.url, { requestOptions: COMMON_REQUEST_OPTIONS_FOR_GET_INFO, lang: 'en' });
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
@@ -100,7 +106,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         outputData.type = 'unknown';
                     }
                 } else {
-                    const playlistInfo = await ytpl(playlistId, { limit: Infinity, requestOptions: COMMON_REQUEST_OPTIONS.requestOptions });
+                    const playlistInfo = await ytpl(playlistId, { limit: Infinity, requestOptions: COMMON_YTPL_REQUEST_OPTIONS });
                     outputData.title = playlistInfo.title;
                     outputData.thumbnailUrl = playlistInfo.thumbnails?.[0]?.url;
                     outputData.playlistAuthor = playlistInfo.author?.name;
@@ -112,28 +118,27 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         duration: item.duration || undefined,
                     }));
                     outputData.type = 'playlist';
-                    // A playlist itself is not "live", individual items might be, but ytpl doesn't give that info.
-                    outputData.isLive = false;
+                    outputData.isLive = false; 
                 }
             } catch (playlistError) {
                 if (ytdl.validateURL(input.url)) {
                     try {
-                        const info = await ytdl.getInfo(input.url, COMMON_REQUEST_OPTIONS);
+                        const info = await ytdl.getInfo(input.url, { requestOptions: COMMON_REQUEST_OPTIONS_FOR_GET_INFO, lang: 'en' });
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
                         outputData.isLive = info.videoDetails.isLiveContent;
                     } catch (ytdlError) {
-                        console.warn(`Both ytpl and ytdl failed for ${input.url} (after playlist attempt): ${(ytdlError as Error).message}`);
+                        console.warn(`[analyzeYoutubeUrlFlow] Both ytpl and ytdl failed for ${input.url} (after playlist attempt). PlaylistError: ${(playlistError as Error).message}. YTDLError: ${(ytdlError as Error).message}`);
                         outputData.type = 'unknown';
                     }
                 } else {
-                     console.warn(`ytpl failed for ${input.url} and it's not a valid ytdl URL: ${(playlistError as Error).message}`);
+                     console.warn(`[analyzeYoutubeUrlFlow] ytpl failed for ${input.url} and it's not a valid ytdl URL. PlaylistError: ${(playlistError as Error).message}`);
                     outputData.type = 'unknown';
                 }
             }
         } else if (ytdl.validateURL(input.url)) {
-            const info = await ytdl.getInfo(input.url, COMMON_REQUEST_OPTIONS);
+            const info = await ytdl.getInfo(input.url, { requestOptions: COMMON_REQUEST_OPTIONS_FOR_GET_INFO, lang: 'en' });
             outputData.title = info.videoDetails.title;
             outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
             outputData.type = 'single';
@@ -142,8 +147,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
             outputData.type = typeFromLlm !== 'single' && typeFromLlm !== 'playlist' ? typeFromLlm : 'unknown';
         }
     } catch (e) {
-      console.error(`Error during YouTube URL analysis for ${input.url}: ${(e as Error).message}`);
-      // Preserve LLM type if it's mixed or unknown and we errored out, otherwise set to unknown
+      console.error(`[analyzeYoutubeUrlFlow] Error during YouTube URL analysis for ${input.url}: ${(e as Error).message}. Stack: ${(e as Error).stack}`);
       outputData.type = (typeFromLlm === 'mixed' || typeFromLlm === 'unknown') && !outputData.title && !outputData.videoItems?.length ? typeFromLlm : 'unknown';
       outputData.title = undefined;
       outputData.thumbnailUrl = undefined;
@@ -153,13 +157,10 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
     }
 
     if (outputData.type === 'playlist' && (!outputData.videoItems || outputData.videoItems.length === 0) && outputData.title) {
-        // If it was identified as a playlist by ytpl, has a title, but no items,
-        // it's an empty playlist. This is valid.
+        // Empty playlist with a title is valid.
     } else if (outputData.type === 'playlist' && (!outputData.title || !outputData.videoItems || outputData.videoItems.length === 0)){
-        // If it's a playlist but lacks title or items (and wasn't an empty playlist with title), then mark unknown
         outputData.type = 'unknown';
     }
-
 
     if (outputData.type === 'single' && !outputData.title) {
         outputData.type = 'unknown';
@@ -170,13 +171,10 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
         outputData.type = 'playlist';
       } else if (outputData.title) {
         outputData.type = 'single';
-        // We might not have `isLive` if it reached here through recovery logic.
-        // It's safer to leave `isLive` as undefined or attempt re-fetch if critical.
-        // For now, if type is single and we have a title, isLive might be missing.
-        // The download action will re-check `isLive` robustly.
       }
     }
 
     return outputData;
   }
 );
+
