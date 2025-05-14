@@ -67,6 +67,7 @@ const COMMON_REQUEST_OPTIONS = {
   requestOptions: {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9', // Added Accept-Language header
     },
   },
 };
@@ -150,7 +151,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
       outputData.playlistAuthor = undefined;
       outputData.isLive = undefined;
     }
-    
+
     if (outputData.type === 'playlist' && (!outputData.videoItems || outputData.videoItems.length === 0) && outputData.title) {
         // If it was identified as a playlist by ytpl, has a title, but no items,
         // it's an empty playlist. This is valid.
@@ -163,7 +164,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
     if (outputData.type === 'single' && !outputData.title) {
         outputData.type = 'unknown';
     }
-    
+
     if (outputData.type === 'unknown' && (outputData.title || (outputData.videoItems && outputData.videoItems.length > 0))) {
       if(outputData.videoItems && outputData.videoItems.length > 0) {
         outputData.type = 'playlist';
