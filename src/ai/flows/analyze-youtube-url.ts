@@ -8,7 +8,7 @@
 'use server';
 
 import {ai} from '@/ai/genkit';
-import {z} from 'genkit';
+import {z} from 'zod';
 import ytdl from 'ytdl-core';
 import ytpl from 'ytpl';
 
@@ -66,7 +66,7 @@ const analyzeYoutubeUrlPrompt = ai.definePrompt({
 const COMMON_REQUEST_OPTIONS = {
   requestOptions: {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
     },
   },
 };
@@ -99,7 +99,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         outputData.type = 'unknown';
                     }
                 } else {
-                    const playlistInfo = await ytpl(playlistId, { limit: Infinity, ...COMMON_REQUEST_OPTIONS });
+                    const playlistInfo = await ytpl(playlistId, { limit: Infinity, requestOptions: COMMON_REQUEST_OPTIONS.requestOptions });
                     outputData.title = playlistInfo.title;
                     outputData.thumbnailUrl = playlistInfo.thumbnails?.[0]?.url;
                     outputData.playlistAuthor = playlistInfo.author?.name;

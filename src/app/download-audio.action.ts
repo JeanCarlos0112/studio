@@ -4,7 +4,7 @@
 
 'use server';
 
-import ytdl from 'ytdl-core';
+import ytdl, { type videoInfo as YtdlVideoInfo, type videoFormat as YtdlVideoFormat } from 'ytdl-core';
 import { PassThrough } from 'stream';
 
 // Helper to sanitize filenames
@@ -31,25 +31,22 @@ interface DownloadError {
 const YTDL_REQUEST_OPTIONS = {
   requestOptions: {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', // Updated User-Agent
-      // Some users report success with additional headers, but these can be source of breakage too.
-      // 'Accept-Language': 'en-US,en;q=0.9', 
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', 
     },
   },
-  // Consider adding highWaterMark here if issues persist with large files, though it's for the stream itself
-  // highWaterMark: 1 << 25, // Example: 1MB buffer, apply to ytdl() call options
+  highWaterMark: 1 << 25, // 32MB buffer for the stream from ytdl
 };
 
 export async function downloadAudioAction(youtubeUrl: string, customTitle?: string): Promise<Response | DownloadError> {
-  let videoInfo: ytdl.videoInfo | undefined;
-  let format: ytdl.videoFormat | undefined;
+  let videoInfo: YtdlVideoInfo | undefined;
+  let format: YtdlVideoFormat | undefined;
 
   try {
     if (!ytdl.validateURL(youtubeUrl)) {
       return { error: 'Invalid YouTube URL provided. Please ensure it is a valid video URL.' };
     }
 
-    videoInfo = await ytdl.getInfo(youtubeUrl, YTDL_REQUEST_OPTIONS);
+    videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: YTDL_REQUEST_OPTIONS.requestOptions });
 
     if (videoInfo.videoDetails.isLiveContent) {
       return { error: `Downloading live streams as complete audio files is not currently supported. Please use a URL for a non-live video.` };
@@ -74,11 +71,13 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
       return { error: `No suitable audio-only format found for this video (${videoTitle}). It might be a live stream or have other restrictions.` };
     }
     
+    // ytdl-core returns a Readable stream directly
     const audioStream = ytdl(youtubeUrl, { 
       format: format,
       requestOptions: YTDL_REQUEST_OPTIONS.requestOptions,
-      highWaterMark: 1 << 25, // 1MB buffer for the stream
+      highWaterMark: YTDL_REQUEST_OPTIONS.highWaterMark, 
     });
+    
     const passThrough = new PassThrough();
     audioStream.pipe(passThrough);
 
@@ -114,7 +113,6 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
         console.error(`Video Info (if available at error point):`);
         console.error(`  Title: ${videoInfo.videoDetails.title}`);
         console.error(`  Is Live: ${videoInfo.videoDetails.isLiveContent}`);
-        // console.error(`  Raw videoInfo: ${JSON.stringify(videoInfo, null, 2)}`); // Can be very long
     } else {
         console.error(`Video Info: Not available (error likely occurred during getInfo).`);
     }
@@ -122,12 +120,11 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
         console.error(`Chosen Format (if available at error point):`);
         console.error(`  MIME Type: ${format.mimeType}`);
         console.error(`  Quality Label: ${format.qualityLabel}`);
-        // console.error(`  Raw format: ${JSON.stringify(format, null, 2)}`);
     } else {
         console.error(`Chosen Format: Not available (error likely occurred before format selection).`);
     }
 
-    console.error("Error Type:", typeof error);
+    console.error("Error Type:", Object.prototype.toString.call(error));
     if (error instanceof Error) {
         console.error("Error Name:", error.name);
         console.error("Error Message:", error.message);
@@ -140,20 +137,18 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
         }
         console.error("Error Stack:\n", error.stack);
         
-        // Log any additional enumerable properties of the error object
         const errorProperties: Record<string, any> = {};
         for (const key in error) {
             if (Object.prototype.hasOwnProperty.call(error, key)) {
                 errorProperties[key] = (error as Record<string, any>)[key];
             }
         }
-        if (Object.keys(errorProperties).length > 2) { // Avoid logging just name and message again
-            // Attempt to filter out potentially huge or circular properties for logging
+        if (Object.keys(errorProperties).length > 2) { 
             const loggedProperties: Record<string, any> = {};
             for (const key in errorProperties) {
                 if (typeof errorProperties[key] !== 'object' || errorProperties[key] === null) {
                     loggedProperties[key] = errorProperties[key];
-                } else if (Object.keys(errorProperties[key]).length < 10) { // Heuristic: log small objects
+                } else if (Object.keys(errorProperties[key]).length < 10) { 
                     loggedProperties[key] = errorProperties[key];
                 } else {
                     loggedProperties[key] = `[Object with ${Object.keys(errorProperties[key]).length} keys, not fully logged]`;
@@ -172,12 +167,11 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     }
     console.error(`--- END DETAILED ERROR REPORT ---\n`);
 
-    // Client-facing error message generation remains the same
     let errorMessage: string;
     
     if (error instanceof Error) {
         const lowercaseErrorMessage = typeof error.message === 'string' ? error.message.toLowerCase() : '';
-        if (lowercaseErrorMessage.includes('could not extract functions') || lowercaseErrorMessage.includes('error parsing info') || lowercaseErrorMessage.includes('failed to get video info') || lowercaseErrorMessage.includes('signature decipher') || lowercaseErrorMessage.includes('throttled') || lowercaseErrorMessage.includes('no functions found')) {
+        if (lowercaseErrorMessage.includes('could not extract functions') || lowercaseErrorMessage.includes('error parsing info') || lowercaseErrorMessage.includes('failed to get video info') || lowercaseErrorMessage.includes('signature decipher') || lowercaseErrorMessage.includes('throttled') || lowercaseErrorMessage.includes('no functions found') || lowercaseErrorMessage.includes('nsig') ) {
             errorMessage = `Failed to process this video (URL: ${youtubeUrl}). This error (Original: ${error.message}) commonly occurs when YouTube updates its video player structure, the video has specific restrictions (e.g., age-restricted, private), your server's IP is temporarily throttled by YouTube, or the video is a live stream not yet fully processed. The library used ('ytdl-core') may need an update or YouTube's structure changed. Please try a different video or check back later.`;
         } else if (lowercaseErrorMessage.includes('no suitable format found')) {
              errorMessage = `No suitable audio format could be found for this video (URL: ${youtubeUrl}). It might be a live stream, a members-only video, or have other restrictions. Original error: ${error.message}`;

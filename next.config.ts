@@ -18,7 +18,7 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  serverExternalPackages: ['ytpl', 'ytdl-core'], // Corrigido conforme recomendação
+  serverExternalPackages: ['ytpl', 'ytdl-core'],
 };
 
 export default nextConfig;
