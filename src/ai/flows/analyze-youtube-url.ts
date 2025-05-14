@@ -44,6 +44,14 @@ export async function analyzeYoutubeUrl(input: AnalyzeYoutubeUrlInput): Promise<
   return analyzeYoutubeUrlFlow(input);
 }
 
+const ytdlRequestOptions = {
+  requestOptions: {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    },
+  },
+};
+
 const analyzeYoutubeUrlPrompt = ai.definePrompt({
   name: 'analyzeYoutubeUrlPrompt',
   input: {schema: AnalyzeYoutubeUrlInputSchema},
@@ -82,7 +90,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                 const playlistId = await ytpl.getPlaylistID(input.url);
                 if (!ytpl.validateID(playlistId)) {
                     if (ytdl.validateURL(input.url)) {
-                        const info = await ytdl.getInfo(input.url, { lang: 'en' });
+                        const info = await ytdl.getInfo(input.url, { lang: 'en', ...ytdlRequestOptions });
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
@@ -103,12 +111,12 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         duration: item.duration || undefined,
                     }));
                     outputData.type = 'playlist';
-                    outputData.isLive = false; 
+                    outputData.isLive = false;
                 }
             } catch (playlistError) {
                 if (ytdl.validateURL(input.url)) {
                     try {
-                        const info = await ytdl.getInfo(input.url, { lang: 'en' });
+                        const info = await ytdl.getInfo(input.url, { lang: 'en', ...ytdlRequestOptions });
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
@@ -123,7 +131,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                 }
             }
         } else if (ytdl.validateURL(input.url)) {
-            const info = await ytdl.getInfo(input.url, { lang: 'en' });
+            const info = await ytdl.getInfo(input.url, { lang: 'en', ...ytdlRequestOptions });
             outputData.title = info.videoDetails.title;
             outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
             outputData.type = 'single';
