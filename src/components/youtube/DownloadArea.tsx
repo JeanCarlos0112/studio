@@ -94,14 +94,14 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         itemsToDownload, 
         isPlaylist, 
         playlistTitle,
-        newAbortController.signal // Pass the AbortSignal directly
+        newAbortController.signal, // Pass the AbortSignal object
+        newAbortController.signal.aborted // Pass the initial aborted state as a boolean
       );
 
-      if (newAbortController.signal.aborted) { 
-        if(progressDetails.stage !== 'cancelled') {
-            setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
-            toast({ title: "Download Cancelled", description: "The download process was cancelled by the user.", variant: "default" });
-        }
+      if (newAbortController.signal.aborted && progressDetails.stage !== 'cancelled') { 
+        // If the signal is aborted by the time we get the response, and we haven't already set to cancelled
+        setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
+        toast({ title: "Download Cancelled", description: "The download process was cancelled by the user.", variant: "default" });
         return;
       }
 
@@ -147,41 +147,39 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         } else {
           const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status}. Please try again.` }));
           const errorMessage = errorData.error || `Server error: ${response.status}. Please try again.`;
-          throw new Error(errorMessage);
+          throw new Error(errorMessage); // This will be caught by the outer catch
         }
       } else if (response.error) {
-        throw new Error(response.error);
+        // This means downloadAudioAction returned a DownloadError object
+        throw new Error(response.error); // This will be caught by the outer catch
       } else {
         throw new Error('Unexpected response from server.');
       }
     } catch (e) {
       let errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-      let errorName = e instanceof Error ? e.name : "UnknownError";
+      // Check if the error message itself indicates a client-side cancellation or if the signal is aborted
+      const clientCancelled = newAbortController.signal.aborted || errorMessage.toLowerCase().includes("cancelled by client") || errorMessage.toLowerCase().includes("aborted by client");
 
-      // Check if the abort controller signal (client-side) was aborted OR if error is AbortError
-      if (newAbortController.signal.aborted || errorName === 'AbortError') {
-         if(progressDetails.stage !== 'cancelled') { 
-             setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
-             // Prioritize signal aborted message if that's the case
-             const cancelDesc = newAbortController.signal.aborted ? "The download process was cancelled by the user." : `The download process was aborted: ${errorMessage}`;
-             toast({ title: "Download Cancelled", description: cancelDesc, variant: "default" });
-        }
-      } else { 
-        console.error("Download error:", e);
-        // Check if the error message from server indicates cancellation
-        if (errorMessage.toLowerCase().includes("operation cancelled")) {
-             setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
-             toast({ title: "Download Cancelled", description: "The operation was cancelled on the server.", variant: "default" });
-        } else {
-            setProgressDetails({ stage: 'error', overallPercentage: 0 });
-            toast({
-              title: "Download Failed",
-              description: errorMessage,
-              variant: "destructive",
-            });
-        }
+      if (clientCancelled && progressDetails.stage !== 'cancelled') { 
+          setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
+          const cancelDesc = newAbortController.signal.aborted ? "The download process was cancelled by the user." : `The download process was aborted: ${errorMessage}`;
+          toast({ title: "Download Cancelled", description: cancelDesc, variant: "default" });
+      } else if (errorMessage.toLowerCase().includes("operation cancelled") && progressDetails.stage !== 'cancelled') {
+          // This handles cancellations reported by the server action (e.g. "Operation cancelled: ...")
+          setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
+          toast({ title: "Download Cancelled", description: errorMessage, variant: "default" });
+      } else if (progressDetails.stage !== 'cancelled' && progressDetails.stage !== 'error') {
+          // For other errors
+          console.error("Download error:", e);
+          setProgressDetails({ stage: 'error', overallPercentage: 0 });
+          toast({
+            title: "Download Failed",
+            description: errorMessage,
+            variant: "destructive",
+          });
       }
     } finally {
+        // Clean up abort controller if it's the one we created for this download attempt
         if (abortController === newAbortController) { 
             setAbortController(null);
         }
@@ -206,6 +204,8 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const handleCancelDownload = () => {
     if (abortController) {
       abortController.abort("User cancelled download."); 
+      // State update to 'cancelled' will be handled by the catch block in handleDownload
+      // or by the check `if (newAbortController.signal.aborted)` after the action call.
     }
   };
   
@@ -318,7 +318,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
               width={400} 
               height={225} 
               className="rounded-md mx-auto mb-4 object-cover aspect-video" 
-              unoptimized={!!analysisResult.thumbnailUrl} 
+              unoptimized={!!analysisResult.thumbnailUrl} // Use unoptimized if it's a direct YT thumbnail to avoid Next/Image optimization issues with external dynamic URLs
             />
             {analysisResult.type === 'playlist' && analysisResult.videoItems && analysisResult.videoItems.length > 0 && (
                 <div className="mt-2 text-sm text-muted-foreground">
@@ -393,7 +393,9 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
               className="w-full sm:w-auto bg-accent hover:bg-accent/90 text-accent-foreground text-lg py-3"
               disabled={isProcessing} 
             >
-              {analysisResult.type === 'single' ? <Download className="mr-2 h-5 w-5" /> : <Package className="mr-2 h-5 w-5" />}
+              {isProcessing ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : 
+                (analysisResult.type === 'single' ? <Download className="mr-2 h-5 w-5" /> : <Package className="mr-2 h-5 w-5" />)
+              }
               {analysisResult.type === 'single' ? 'Download MP3' : 'Download All as ZIP'}
             </Button>
           )}
