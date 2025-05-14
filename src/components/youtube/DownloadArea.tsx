@@ -89,17 +89,20 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
           })); 
       }
 
+      // Pass the initial aborted state as a boolean, not the signal object itself
+      const wasCancelledBeforeStart = newAbortController.signal.aborted;
+
       const response = await downloadAudioAction(
         primaryUrl, 
         itemsToDownload, 
         isPlaylist, 
         playlistTitle,
-        newAbortController.signal, // Pass the AbortSignal object
-        newAbortController.signal.aborted // Pass the initial aborted state as a boolean
+        wasCancelledBeforeStart // Pass the boolean flag
       );
 
+      // Check if the client cancelled *during* the server action's execution
+      // This check is for user feedback, server action won't know about this mid-flight cancellation
       if (newAbortController.signal.aborted && progressDetails.stage !== 'cancelled') { 
-        // If the signal is aborted by the time we get the response, and we haven't already set to cancelled
         setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
         toast({ title: "Download Cancelled", description: "The download process was cancelled by the user.", variant: "default" });
         return;
@@ -147,7 +150,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         } else {
           const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status}. Please try again.` }));
           const errorMessage = errorData.error || `Server error: ${response.status}. Please try again.`;
-          throw new Error(errorMessage); // This will be caught by the outer catch
+          throw new Error(errorMessage);
         }
       } else if (response.error) {
         // This means downloadAudioAction returned a DownloadError object
@@ -157,19 +160,16 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
       }
     } catch (e) {
       let errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-      // Check if the error message itself indicates a client-side cancellation or if the signal is aborted
-      const clientCancelled = newAbortController.signal.aborted || errorMessage.toLowerCase().includes("cancelled by client") || errorMessage.toLowerCase().includes("aborted by client");
+      
+      // Check if the client explicitly cancelled or if the error message indicates cancellation from server
+      const clientExplicitlyCancelled = newAbortController.signal.aborted;
+      const serverIndicatedCancellation = errorMessage.toLowerCase().includes("cancel");
 
-      if (clientCancelled && progressDetails.stage !== 'cancelled') { 
+      if ((clientExplicitlyCancelled || serverIndicatedCancellation) && progressDetails.stage !== 'cancelled') { 
           setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
-          const cancelDesc = newAbortController.signal.aborted ? "The download process was cancelled by the user." : `The download process was aborted: ${errorMessage}`;
+          const cancelDesc = clientExplicitlyCancelled ? "The download process was cancelled by the user." : errorMessage;
           toast({ title: "Download Cancelled", description: cancelDesc, variant: "default" });
-      } else if (errorMessage.toLowerCase().includes("operation cancelled") && progressDetails.stage !== 'cancelled') {
-          // This handles cancellations reported by the server action (e.g. "Operation cancelled: ...")
-          setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
-          toast({ title: "Download Cancelled", description: errorMessage, variant: "default" });
       } else if (progressDetails.stage !== 'cancelled' && progressDetails.stage !== 'error') {
-          // For other errors
           console.error("Download error:", e);
           setProgressDetails({ stage: 'error', overallPercentage: 0 });
           toast({
@@ -179,7 +179,6 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
           });
       }
     } finally {
-        // Clean up abort controller if it's the one we created for this download attempt
         if (abortController === newAbortController) { 
             setAbortController(null);
         }
@@ -204,8 +203,8 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const handleCancelDownload = () => {
     if (abortController) {
       abortController.abort("User cancelled download."); 
-      // State update to 'cancelled' will be handled by the catch block in handleDownload
-      // or by the check `if (newAbortController.signal.aborted)` after the action call.
+      // State update to 'cancelled' handled in handleDownload's catch/finally or by the check
+      // after the downloadAudioAction call.
     }
   };
   
@@ -318,7 +317,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
               width={400} 
               height={225} 
               className="rounded-md mx-auto mb-4 object-cover aspect-video" 
-              unoptimized={!!analysisResult.thumbnailUrl} // Use unoptimized if it's a direct YT thumbnail to avoid Next/Image optimization issues with external dynamic URLs
+              unoptimized={!!analysisResult.thumbnailUrl} 
             />
             {analysisResult.type === 'playlist' && analysisResult.videoItems && analysisResult.videoItems.length > 0 && (
                 <div className="mt-2 text-sm text-muted-foreground">
@@ -369,7 +368,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
                     <XCircle className="h-5 w-5" />
                     <AlertTitle>Download Error</AlertTitle>
                     <AlertDescription>
-                        An error occurred. Some files may not have processed. Check notifications for details.
+                        An error occurred. Check notifications for details. The error was: {progressDetails.videoTitle || "Details in console."}
                     </AlertDescription>
                 </Alert>
             )}
