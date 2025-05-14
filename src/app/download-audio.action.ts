@@ -95,7 +95,7 @@ async function logDetailedError(error: any, context: string, url: string, videoI
 }
 
 
-async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDir: string, abortSignal?: AbortSignal): Promise<string> {
+async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDir: string): Promise<string> {
   const videoTitle = sanitizeFilename(title);
   const tempVideoPath = path.join(tempDir, `${videoTitle}_${Date.now()}.mp4`);
   const tempMp3Path = path.join(tempDir, `${videoTitle}_${Date.now()}.mp3`);
@@ -113,34 +113,32 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
   }
 
   const format = ytdl.chooseFormat(videoInfo.formats, { 
-    quality: 'highestvideo', // Download video with audio
-    filter: (format) => format.hasAudio && format.hasVideo && format.container === 'mp4', // Prefer mp4
+    quality: 'highestvideo', 
+    filter: (format) => format.hasAudio && format.hasVideo && format.container === 'mp4',
   });
 
-  if (!format) {
-    // Fallback if no ideal mp4 found
+  let chosenFormat = format;
+
+  if (!chosenFormat) {
     const fallbackFormat = ytdl.chooseFormat(videoInfo.formats, { quality: 'highestvideo', filter: (f) => f.hasAudio && f.hasVideo });
     if (!fallbackFormat) {
         await logDetailedError(new Error('No suitable video format found'), `ytdl.chooseFormat for ${title}`, youtubeUrl, videoInfo);
         throw new Error(`No suitable video format found for "${title}".`);
     }
-    // format = fallbackFormat; // This line was commented out but seems necessary for the fallback
+    chosenFormat = fallbackFormat;
   }
   
-  // If still no format, error out
-  if (!format) { // Re-check format after potential fallback attempt
+  if (!chosenFormat) { 
     await logDetailedError(new Error('No suitable video format found even after fallback'), `ytdl.chooseFormat for ${title}`, youtubeUrl, videoInfo);
     throw new Error(`No suitable video format found for "${title}" even after fallback.`);
   }
 
 
   const videoStream = ytdl(youtubeUrl, {
-    format: format,
+    format: chosenFormat,
     requestOptions: { headers: YTDL_REQUEST_HEADERS },
     highWaterMark: YTDL_HIGH_WATER_MARK,
   });
-
-  if (abortSignal?.aborted) throw new Error('Download aborted');
   
   const fileWriteStream = fs.createWriteStream(tempVideoPath);
   videoStream.pipe(fileWriteStream);
@@ -148,52 +146,38 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
   await new Promise((resolve, reject) => {
     fileWriteStream.on('finish', resolve);
     fileWriteStream.on('error', async (err) => {
-        await logDetailedError(err, `WriteStream error during video download for ${title}`, youtubeUrl, videoInfo, format);
+        await logDetailedError(err, `WriteStream error during video download for ${title}`, youtubeUrl, videoInfo, chosenFormat);
         reject(new Error(`Failed to write video file for "${title}": ${err.message}`));
     });
     videoStream.on('error', async (err) => {
-        await logDetailedError(err, `ytdl stream error during video download for ${title}`, youtubeUrl, videoInfo, format);
-        fileWriteStream.destroy(); // Ensure writestream is closed on readstream error
+        await logDetailedError(err, `ytdl stream error during video download for ${title}`, youtubeUrl, videoInfo, chosenFormat);
+        if (!fileWriteStream.destroyed) {
+            fileWriteStream.destroy(); 
+        }
         reject(new Error(`Failed to download video stream for "${title}": ${err.message}`));
     });
-    abortSignal?.addEventListener('abort', () => {
-        videoStream.destroy(new Error('Download aborted'));
-        fileWriteStream.destroy(new Error('Download aborted'));
-        reject(new Error('Download aborted'));
+  });
+
+  let ffmpegCommand: Ffmpeg.FfmpegCommand | null = null;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ffmpegCommand = Ffmpeg(tempVideoPath)
+        .noVideo() 
+        .audioCodec('libmp3lame')
+        .audioBitrate('192k')
+        .toFormat('mp3')
+        .on('error', async (err, stdout, stderr) => {
+          const ffmpegError = new Error(`FFmpeg conversion failed for "${title}": ${err.message}`);
+          (ffmpegError as any).stdErr = stderr; 
+          await logDetailedError(ffmpegError, `FFmpeg conversion for ${title}`, youtubeUrl, videoInfo, chosenFormat, {tempVideoPath, tempMp3Path});
+          reject(ffmpegError);
+        })
+        .on('end', () => resolve())
+        .save(tempMp3Path);
     });
-  });
-
-  if (abortSignal?.aborted) throw new Error('Conversion aborted');
-
-  await new Promise<void>((resolve, reject) => {
-    Ffmpeg(tempVideoPath)
-      .noVideo() // Extract audio
-      .audioCodec('libmp3lame')
-      .audioBitrate('192k') // Standard MP3 quality
-      .toFormat('mp3')
-      .on('error', async (err, stdout, stderr) => {
-        const ffmpegError = new Error(`FFmpeg conversion failed for "${title}": ${err.message}`);
-        (ffmpegError as any).stdErr = stderr; // Attach stderr for more detailed logging
-        await logDetailedError(ffmpegError, `FFmpeg conversion for ${title}`, youtubeUrl, videoInfo, format, {tempVideoPath, tempMp3Path});
-        reject(ffmpegError);
-      })
-      .on('progress', (progress) => {
-        // console.log(`[ffmpeg] ${title} processing: ${progress.percent ? progress.percent.toFixed(2) + '%' : progress.timemark}`);
-        if (abortSignal?.aborted) {
-          // Attempt to kill ffmpeg process if possible, though fluent-ffmpeg might handle this
-          // For now, rely on the subsequent file cleanup and error propagation
-        }
-      })
-      .on('end', () => resolve())
-      .save(tempMp3Path);
-
-      abortSignal?.addEventListener('abort', () => {
-        // This is tricky with fluent-ffmpeg. The process might already be running.
-        // We'll rely on higher-level logic to clean up if an abort occurs.
-        // Ideally, fluent-ffmpeg would expose a way to kill the child process.
-        reject(new Error('Conversion aborted'));
-      });
-  });
+  } catch(error) {
+    throw error;
+  }
   
   await fsp.unlink(tempVideoPath).catch(err => console.warn(`Could not delete temp video file ${tempVideoPath}: ${err.message}`));
   return tempMp3Path;
@@ -201,41 +185,32 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
 
 
 export async function downloadAudioAction(
-  youtubeUrl: string, // For single video, or first video of playlist if type is 'playlist'
-  playlistItems: { url: string; title: string }[] | null, // Null for single video
+  youtubeUrl: string, 
+  playlistItems: { url: string; title: string }[] | null, 
   isPlaylist: boolean,
-  playlistTitle?: string,
-  abortSignal?: AbortSignal // Optional AbortSignal for cancellation
+  playlistTitle?: string
 ): Promise<Response | DownloadError> {
   
   const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'yt-audio-'));
   
   try {
     if (isPlaylist && playlistItems && playlistItems.length > 0) {
-      // Playlist download
       const zip = new JSZip();
       const playlistName = sanitizeFilename(playlistTitle || 'youtube_playlist');
 
       for (let i = 0; i < playlistItems.length; i++) {
-        if (abortSignal?.aborted) throw new Error('Playlist processing aborted.');
+        // If the main action is cancelled by Next.js (due to client abort), this loop should terminate.
         const item = playlistItems[i];
         try {
-          const mp3Path = await downloadAndConvertToMp3(item.url, item.title, tempDir, abortSignal);
-          if (abortSignal?.aborted) { // Check again after async operation
-             await fsp.unlink(mp3Path).catch(e => console.warn(`Failed to clean up ${mp3Path} after abort: ${e.message}`));
-             throw new Error('Playlist processing aborted during MP3 conversion/add.');
-          }
+          const mp3Path = await downloadAndConvertToMp3(item.url, item.title, tempDir);
           const mp3Data = await fsp.readFile(mp3Path);
           zip.file(`${sanitizeFilename(item.title)}.mp3`, mp3Data);
           await fsp.unlink(mp3Path).catch(e => console.warn(`Failed to clean up ${mp3Path}: ${e.message}`));
         } catch (itemError) {
           console.warn(`Skipping playlist item "${item.title}" due to error: ${(itemError as Error).message}`);
-          // Optionally, add a text file to the zip indicating this error
           zip.file(`ERROR_${sanitizeFilename(item.title)}.txt`, `Failed to process: ${(itemError as Error).message}`);
         }
       }
-
-      if (abortSignal?.aborted) throw new Error('Playlist processing aborted before zipping.');
 
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', streamFiles: true });
       
@@ -264,13 +239,8 @@ export async function downloadAudioAction(
         return { error: `Downloading live streams is not currently supported.` };
       }
       const title = videoInfo.videoDetails.title;
-      const mp3Path = await downloadAndConvertToMp3(youtubeUrl, title, tempDir, abortSignal);
+      const mp3Path = await downloadAndConvertToMp3(youtubeUrl, title, tempDir);
       
-      if (abortSignal?.aborted) {
-         await fsp.unlink(mp3Path).catch(e => console.warn(`Failed to clean up ${mp3Path} after abort: ${e.message}`));
-         throw new Error('Single video download aborted.');
-      }
-
       const stats = await fsp.stat(mp3Path);
       const fileStream = fs.createReadStream(mp3Path);
       
@@ -283,44 +253,29 @@ export async function downloadAudioAction(
           passThrough.destroy(err);
         }
       });
-       abortSignal?.addEventListener('abort', () => {
-        fileStream.destroy(new Error('Download aborted by client'));
-        if (!passThrough.destroyed) {
-            passThrough.destroy(new Error('Download aborted by client'));
-        }
-      });
-
-
+     
       const safeFilename = `${sanitizeFilename(title)}.mp3`;
       const headers = new Headers();
       headers.set('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
       headers.set('Content-Type', 'audio/mpeg');
       headers.set('Content-Length', stats.size.toString());
       
-      // Ensure mp3Path is cleaned up after response finishes or errors
       const response = new Response(passThrough as unknown as ReadableStream, { status: 200, headers });
       
-      // Monkey-patch response to clean up file
-      const originalThen = response.then.bind(response);
-      response.then = (onFulfilled, onRejected) => {
-        return originalThen(
-          (value) => {
-            fsp.unlink(mp3Path).catch(e => console.warn(`Could not delete temp mp3 file ${mp3Path}: ${e.message}`));
-            return onFulfilled ? onFulfilled(value) : value;
-          },
-          (reason) => {
-            fsp.unlink(mp3Path).catch(e => console.warn(`Could not delete temp mp3 file ${mp3Path} on error: ${e.message}`));
-            return onRejected ? onRejected(reason) : Promise.reject(reason);
-          }
-        );
+      const cleanup = () => {
+        // Ensure stream is closed before unlinking
+        if (!fileStream.destroyed) {
+            fileStream.destroy();
+        }
+        fsp.unlink(mp3Path).catch(e => console.warn(`Could not delete temp mp3 file ${mp3Path} after stream: ${e.message}`));
       };
-      const originalFinally = response.finally!.bind(response);
-        response.finally = (onFinally) => {
-            return originalFinally(() => {
-                fsp.unlink(mp3Path).catch(e => console.warn(`Could not delete temp mp3 file ${mp3Path} in finally: ${e.message}`));
-                if (onFinally) onFinally();
-            });
-        };
+      
+      // Listen for the stream to end or error on the server side to cleanup.
+      // This is important because the client might receive the full file before these events fire,
+      // or the connection might drop.
+      passThrough.on('end', cleanup);
+      passThrough.on('error', cleanup); // Also cleanup on error
+      passThrough.on('close', cleanup); // `close` is often more reliable for cleanup
 
 
       return response;
@@ -331,8 +286,18 @@ export async function downloadAudioAction(
     if (error instanceof Error) {
         errorMessage = error.message;
     }
+    
+    // If Next.js terminates the action due to client abort, an error might be thrown here.
+    // Example: "The operation was aborted." or similar depending on Next.js version.
+    // The client side will also detect its own AbortController signal.
+    if (errorMessage.includes('aborted') || errorMessage.includes('cancel') || (error as any)?.name === 'AbortError') {
+        return { error: `Operation cancelled: ${errorMessage}` };
+    }
     return { error: errorMessage };
   } finally {
+    // This block should execute even if the action is terminated by Next.js,
+    // helping to clean up the temporary directory.
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(err => console.warn(`Failed to remove temp directory ${tempDir}: ${err.message}`));
   }
 }
+

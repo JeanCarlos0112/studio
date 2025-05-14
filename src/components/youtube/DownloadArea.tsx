@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare, RadioTower, Package, Settings2 } from 'lucide-react';
+import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare, RadioTower, Package } from 'lucide-react'; // Removed Settings2
 import { useToast } from "@/hooks/use-toast";
 import Image from 'next/image';
 
@@ -25,7 +25,7 @@ type DownloadStage =
   | 'converting_video'
   | 'adding_to_archive'
   | 'compressing_archive'
-  | 'downloading_browser' // Browser is now handling the actual download
+  | 'downloading_browser' 
   | 'completed' 
   | 'error' 
   | 'cancelled';
@@ -47,15 +47,16 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const resetStates = useCallback(() => {
     setProgressDetails({ stage: 'idle', overallPercentage: 0 });
     if (abortController) {
-      abortController.abort();
+      abortController.abort(); 
       setAbortController(null);
     }
-  }, [abortController]);
+  }, [abortController]); 
 
   useEffect(() => {
     resetStates();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysisResult, youtubeUrl]); // Don't include resetStates here to avoid loop
+  }, [analysisResult, youtubeUrl]);
+
 
   const handleDownload = async () => {
     if (!analysisResult || (progressDetails.stage !== 'idle' && progressDetails.stage !== 'completed' && progressDetails.stage !== 'error' && progressDetails.stage !== 'cancelled')) {
@@ -63,49 +64,47 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     }
 
     const newAbortController = new AbortController();
-    setAbortController(newAbortController);
+    setAbortController(newAbortController); 
     
-    // Reset progress for a new download attempt
     setProgressDetails({ stage: 'preparing', overallPercentage: 5 });
 
     const isPlaylist = analysisResult.type === 'playlist';
     const itemsToDownload = isPlaylist && analysisResult.videoItems ? analysisResult.videoItems.map(v => ({ url: v.url, title: v.title })) : null;
-    const primaryUrl = youtubeUrl; // For single video or as a fallback identifier
+    const primaryUrl = youtubeUrl; 
     const playlistTitle = isPlaylist ? analysisResult.title : undefined;
 
     try {
-      // For playlists, the "preparing" stage might involve iterating or initial setup before first download.
       if (isPlaylist) {
         setProgressDetails(prev => ({ ...prev, stage: 'preparing', overallPercentage: 10, videoIndex: 0, totalVideos: itemsToDownload?.length || 0 }));
       } else {
         setProgressDetails(prev => ({ ...prev, stage: 'downloading_video', overallPercentage: 20 }));
       }
-
-      // Simulate stage progression for UI update - actual progress comes from observing the download
-      // In a real scenario with detailed progress, this would be updated by the downloadAudioAction or events
-      // For now, we make high-level updates.
       
-      // Simulate video downloading and conversion stage for UI
-      // In a real implementation, these would be more granular based on actual events
-      if (isPlaylist && itemsToDownload) {
-          // Placeholder for iterating through playlist items and updating progress for each
-          // This is simplified. A real implementation would update progress per item.
+      if (isPlaylist && itemsToDownload && itemsToDownload.length > 0) {
           setProgressDetails(prev => ({ 
               ...prev, 
               stage: 'downloading_video', 
               overallPercentage: 30, 
-              videoIndex: 1, // Example for first video
+              videoIndex: 1, 
               videoTitle: itemsToDownload[0]?.title
           })); 
-          // Further updates for converting_video, adding_to_archive would follow
       }
 
+      const response = await downloadAudioAction(
+        primaryUrl, 
+        itemsToDownload, 
+        isPlaylist, 
+        playlistTitle
+        // newAbortController.signal was removed here
+      );
 
-      const response = await downloadAudioAction(primaryUrl, itemsToDownload, isPlaylist, playlistTitle, newAbortController.signal);
-
-      if (newAbortController.signal.aborted) {
-        setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
-        toast({ title: "Download Cancelled", description: "The download process was cancelled by the user.", variant: "default" });
+      if (newAbortController.signal.aborted) { // Check client-side controller
+        // This might be redundant if the fetch itself throws an AbortError,
+        // but good for explicit client-side cancellation detection.
+        if(progressDetails.stage !== 'cancelled') {
+            setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
+            toast({ title: "Download Cancelled", description: "The download process was cancelled by the user.", variant: "default" });
+        }
         return;
       }
 
@@ -141,10 +140,12 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
           });
           
           setTimeout(() => {
-            document.body.removeChild(link);
+            if (document.body.contains(link)) {
+                 document.body.removeChild(link);
+            }
             window.URL.revokeObjectURL(objectUrl);
             setProgressDetails({ stage: 'completed', overallPercentage: 100 });
-          }, 200); // Increased timeout slightly
+          }, 200);
 
         } else {
           const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status}. Please try again.` }));
@@ -157,24 +158,30 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         throw new Error('Unexpected response from server.');
       }
     } catch (e) {
-      if (newAbortController.signal.aborted) {
-        // Already handled or will be by the abort check above
-        if(progressDetails.stage !== 'cancelled') {
+      let errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+      let errorName = e instanceof Error ? e.name : "UnknownError";
+
+      if (errorName === 'AbortError' || newAbortController.signal.aborted) {
+         if(progressDetails.stage !== 'cancelled') { 
              setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
              toast({ title: "Download Cancelled", description: "The download process was cancelled.", variant: "default" });
         }
-      } else {
-        const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+      } else { 
         console.error("Download error:", e);
-        setProgressDetails({ stage: 'error', overallPercentage: 0 });
-        toast({
-          title: "Download Failed",
-          description: errorMessage,
-          variant: "destructive",
-        });
+        if (errorMessage.toLowerCase().includes("operation cancelled")) {
+             setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
+             toast({ title: "Download Cancelled", description: "The operation was cancelled on the server.", variant: "default" });
+        } else {
+            setProgressDetails({ stage: 'error', overallPercentage: 0 });
+            toast({
+              title: "Download Failed",
+              description: errorMessage,
+              variant: "destructive",
+            });
+        }
       }
     } finally {
-        if (abortController === newAbortController) { // Ensure we only clear the controller if it's the one we set for this op
+        if (abortController === newAbortController) { 
             setAbortController(null);
         }
     }
@@ -189,7 +196,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         saneName = saneName.substring(0, saneName.length -1) + '_';
     }
     if (!saneName || saneName === '.mp3' || saneName === '.zip') { 
-      saneName = 'downloaded_file'; // Generic fallback
+      saneName = 'downloaded_file'; 
     }
     return saneName;
   }
@@ -199,8 +206,6 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     if (abortController) {
       abortController.abort(); 
     }
-    // No need to call resetStates() here, effect hook or error/abort handling in handleDownload will manage state.
-    // Setting stage to 'cancelled' is done within handleDownload on abort detection.
   };
   
   const getProgressMessage = () => {
@@ -223,7 +228,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
             if (analysisResult?.type === 'playlist' && videoIndex !== undefined && totalVideos && videoTitle) {
                 return `Adding "${videoTitle}" to archive (${videoIndex}/${totalVideos})... (${percent}%)`;
             }
-            return `Archiving... (${percent}%)`; // Should not happen for single
+            return `Archiving... (${percent}%)`; 
         case 'compressing_archive': return `Compressing audio files into ZIP... (${percent}%)`;
         case 'downloading_browser': return `Download initiated, your browser is handling it... (${percent}%)`;
         case 'completed': return `Download process complete! (${percent}%)`;
@@ -406,3 +411,4 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     </Card>
   );
 }
+
