@@ -5,12 +5,14 @@
 
 'use server';
 
-import ytdl, { type videoInfo as YtdlVideoInfo, type videoFormat as YtdlVideoFormat } from 'ytdl-core';
-import { PassThrough, Readable } from 'stream';
-import fs from 'fs';
-import fsp from 'fs/promises';
-import path from 'path';
-import os from 'os';
+import ytdl from '@distube/ytdl-core';
+type YtdlVideoInfo = Awaited<ReturnType<typeof ytdl.getInfo>>;
+type YtdlVideoFormat = NonNullable<YtdlVideoInfo['formats']>[number];
+import * as stream from 'stream';
+import * as fs from 'fs';
+import * as fsp from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
 import Ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import JSZip from 'jszip';
@@ -178,9 +180,11 @@ async function downloadAndConvertToMp3(
             reject(new Error(`Failed to write video file for "${title}": ${err.message || 'WriteStream error'}`));
         }
     });
-    videoStream.on('error', async (err) => {
-        if (!fileWriteStream.destroyed) {
-            fileWriteStream.destroy();
+    videoStream.on('error', async (err: any) => {
+        const writableFinished = (fileWriteStream as any).writableFinished ?? false;
+        const destroyed = (fileWriteStream as any).destroyed ?? false;
+        if (!writableFinished && !destroyed) {
+            fileWriteStream.close();
         }
         if (err instanceof AbortErrorCustom || err.name === 'AbortError') {
              reject(err instanceof AbortErrorCustom || err.name === 'AbortError' ? err : new AbortErrorCustom(`Video download for "${title}" cancelled during ytdl stream error.`));
@@ -189,7 +193,7 @@ async function downloadAndConvertToMp3(
             reject(new Error(`Failed to download video stream for "${title}": ${err.message || 'ytdl stream error'}`));
         }
     });
-  });
+  }); // <-- Add this closing bracket to end the Promise block
 
   await downloadPromise;
 
@@ -212,18 +216,6 @@ async function downloadAndConvertToMp3(
     let ffmpegKilledByError = false;
 
     ffmpegCommand
-      .on('error', async (err: any, stdout: string, stderr: string) => {
-        ffmpegKilledByError = true;
-        if (err.message?.includes('SIGTERM') || err.message?.includes('killed')) {
-             reject(new AbortErrorCustom(`FFmpeg conversion for "${title}" was cancelled/killed (on error event).`));
-             return;
-        }
-        const ffmpegErrorMessage = err.message || 'FFmpeg conversion error';
-        const ffmpegError = new Error(`FFmpeg conversion failed for "${title}": ${ffmpegErrorMessage}`);
-        (ffmpegError as any).stdErr = stderr;
-        await logDetailedError(ffmpegError, `FFmpeg conversion for ${title}`, youtubeUrl, videoInfo, chosenFormat, {tempVideoPath, tempMp3Path, ffmpegStdout: stdout, ffmpegStderr: stderr});
-        reject(ffmpegError);
-      })
       .on('end', () => {
         if (ffmpegKilledByError) {
              if (isOperationInitiallyCancelled) {
@@ -234,6 +226,20 @@ async function downloadAndConvertToMp3(
         resolve();
       })
       .save(tempMp3Path);
+
+    // Attach error handler separately to avoid TypeScript overload issues
+    (ffmpegCommand as any).on('error', async (err: any, stdout: string, stderr: string) => {
+      ffmpegKilledByError = true;
+      if (err.message?.includes('SIGTERM') || err.message?.includes('killed')) {
+           reject(new AbortErrorCustom(`FFmpeg conversion for "${title}" was cancelled/killed (on error event).`));
+           return;
+      }
+      const ffmpegErrorMessage = err.message || 'FFmpeg conversion error';
+      const ffmpegError = new Error(`FFmpeg conversion failed for "${title}": ${ffmpegErrorMessage}`);
+      (ffmpegError as any).stdErr = stderr;
+      await logDetailedError(ffmpegError, `FFmpeg conversion for ${title}`, youtubeUrl, videoInfo, chosenFormat, {tempVideoPath, tempMp3Path, ffmpegStdout: stdout, ffmpegStderr: stderr});
+      reject(ffmpegError);
+    });
   });
 
   try {
@@ -346,70 +352,63 @@ export async function downloadAudioAction(
       }
 
       const mp3Path = await downloadAndConvertToMp3(youtubeUrl, title, tempDir, isClientCancelledInitially);
-
-      const stats = await fsp.stat(mp3Path);
       const fileStream = fs.createReadStream(mp3Path);
+      const passThrough = new stream.PassThrough();
+      (fileStream as unknown as NodeJS.ReadableStream).pipe(passThrough);
 
-      const passThrough = new PassThrough();
-      fileStream.pipe(passThrough);
-
-      fileStream.on('error', (err) => {
+      fileStream.on('error', (err: NodeJS.ErrnoException) => {
         console.error(`[downloadAudioAction] Error reading MP3 file stream ${mp3Path}:`, err);
-        if (!passThrough.destroyed) {
+        if (!(passThrough as any).destroyed) {
           passThrough.destroy(err);
         }
       });
 
       const safeFilename = `${sanitizeFilename(title)}.mp3`;
+      const stats = await fsp.stat(mp3Path);
       const headers = new Headers();
       headers.set('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
       headers.set('Content-Type', 'audio/mpeg');
       headers.set('Content-Length', stats.size.toString());
-
       const readableWebStream = new ReadableStream({
-        start(controller) {
+        start(controller: ReadableStreamDefaultController) {
           if (isClientCancelledInitially) {
             const abortError = new AbortErrorCustom('Download stream cancelled by initial client request.');
             controller.error(abortError);
-            if (!passThrough.destroyed) passThrough.destroy(abortError);
-            if (!fileStream.destroyed) fileStream.destroy(abortError);
+            if (!(passThrough as any).destroyed) passThrough.destroy(abortError);
+            if (typeof (fileStream as any).destroy === 'function') (fileStream as any).destroy(abortError);
             return;
           }
 
-          passThrough.on('data', (chunk) => {
+          passThrough.on('data', (chunk: any) => {
             try {
               controller.enqueue(chunk);
             } catch (e) {
               console.warn("[downloadAudioAction] Error enqueuing chunk to ReadableStream:", e);
-              if (!fileStream.destroyed) fileStream.destroy(e as Error);
-              if (!passThrough.destroyed) passThrough.destroy(e as Error);
+              if (typeof (fileStream as any).destroy === 'function') (fileStream as any).destroy(e as Error);
+              if (!(passThrough as any).destroyed) passThrough.destroy(e as Error);
               controller.error(e as Error); // Ensure controller errors out
             }
           });
           passThrough.on('end', () => {
-            if (!controller['closed']) {
-              try {
-                controller.close();
-              } catch(e) {
-                console.warn("[downloadAudioAction] Error closing controller on 'end':", e);
-              }
+            try {
+              controller.close();
+            } catch(e) {
+              console.warn("[downloadAudioAction] Error closing controller on 'end':", e);
             }
           });
-          passThrough.on('error', (err) => {
-             if (!controller['closed']) {
-                try {
-                  controller.error(err);
-                } catch(e) {
-                  console.warn("[downloadAudioAction] Error signaling controller error on 'passThrough error':", e);
-                }
-             }
+          passThrough.on('error', (err: any) => {
+            try {
+              controller.error(err);
+            } catch(e) {
+              console.warn("[downloadAudioAction] Error signaling controller error on 'passThrough error':", e);
+            }
           });
         },
-        cancel(reason) {
+        cancel(reason: any) {
           console.info(`[downloadAudioAction] ReadableStream cancelled by client. Reason: ${reason}`);
           const finalError = reason instanceof Error ? reason : new Error(String(reason));
-          if (!passThrough.destroyed) passThrough.destroy(finalError);
-          if (!fileStream.destroyed) fileStream.destroy(finalError);
+          if (!(passThrough as any).destroyed) passThrough.destroy(finalError);
+          if (typeof (fileStream as any).destroy === 'function') (fileStream as any).destroy(finalError);
         }
       });
 
@@ -419,8 +418,8 @@ export async function downloadAudioAction(
       const performCleanupOnce = async () => {
           if (!cleanedUp) {
               cleanedUp = true;
-              if (fileStream && !fileStream.destroyed) {
-                fileStream.destroy();
+              if (fileStream && typeof (fileStream as any).destroy === 'function') {
+                (fileStream as any).destroy();
               }
               if (mp3Path) {
                 await fsp.unlink(mp3Path).catch(e => console.warn(`Could not delete temp mp3 file ${mp3Path} after stream: ${e.message}`));
@@ -430,6 +429,8 @@ export async function downloadAudioAction(
 
       passThrough.on('close', performCleanupOnce);
       passThrough.on('error', performCleanupOnce); // Ensure cleanup on error too
+
+      return response;
 
       return response;
     }

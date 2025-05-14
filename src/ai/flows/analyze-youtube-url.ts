@@ -9,7 +9,7 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'zod';
-import ytdl from 'ytdl-core';
+import ytdl from '@distube/ytdl-core';
 import ytpl from 'ytpl';
 
 const AnalyzeYoutubeUrlInputSchema = z.object({
@@ -101,13 +101,13 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                 } else {
                     const playlistInfo = await ytpl(playlistId, { limit: Infinity });
                     outputData.title = playlistInfo.title;
-                    outputData.thumbnailUrl = playlistInfo.thumbnails?.[0]?.url;
+                    outputData.thumbnailUrl = playlistInfo.thumbnails?.[0]?.url ?? undefined;
                     outputData.playlistAuthor = playlistInfo.author?.name;
                     outputData.videoItems = playlistInfo.items.map(item => ({
                         id: item.id,
                         title: item.title,
                         url: item.shortUrl,
-                        thumbnailUrl: item.thumbnails?.[0]?.url,
+                        thumbnailUrl: item.thumbnails?.[0]?.url ?? undefined,
                         duration: item.duration || undefined,
                     }));
                     outputData.type = 'playlist';
