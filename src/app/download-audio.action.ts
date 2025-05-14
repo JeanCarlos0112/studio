@@ -89,7 +89,12 @@ async function logDetailedError(error: any, context: string, urlOrTitle: string,
 }
 
 
-async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDir: string, isCancelled: () => boolean): Promise<string> {
+async function downloadAndConvertToMp3(
+    youtubeUrl: string, 
+    title: string, 
+    tempDir: string, 
+    operationSignal?: AbortSignal // Accept AbortSignal directly
+): Promise<string> {
   const videoTitle = sanitizeFilename(title);
   const tempVideoPath = path.join(tempDir, `${videoTitle}_${Date.now()}.mp4`);
   const tempMp3Path = path.join(tempDir, `${videoTitle}_${Date.now()}.mp3`);
@@ -102,7 +107,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
     throw new Error(`Failed to get video info for "${title}": ${infoError.message || 'Unknown ytdl.getInfo error'}`);
   }
 
-  if (isCancelled()) throw new Error(`Download cancelled for "${title}" before starting download.`);
+  if (operationSignal?.aborted) throw new Error(`Download cancelled for "${title}" before starting download.`);
   
   if (videoInfo.videoDetails.isLiveContent) {
     throw new Error(`"${title}" is a live stream and cannot be processed.`);
@@ -139,7 +144,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
 
   const downloadPromise = new Promise<void>((resolve, reject) => {
     const checkCancellationInterval = setInterval(() => {
-        if (isCancelled()) {
+        if (operationSignal?.aborted) { // Check signal.aborted
             videoStream.destroy(new Error('Download cancelled by client.'));
             if (!fileWriteStream.destroyed) {
                 fileWriteStream.destroy(new Error('Download cancelled by client.'));
@@ -147,7 +152,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
             clearInterval(checkCancellationInterval);
             reject(new Error(`Video download for "${title}" cancelled.`));
         }
-    }, 500); // Check every 500ms
+    }, 500);
 
 
     videoStream.pipe(fileWriteStream);
@@ -172,7 +177,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
 
   await downloadPromise;
 
-  if (isCancelled()) throw new Error(`Download cancelled for "${title}" after video download, before conversion.`);
+  if (operationSignal?.aborted) throw new Error(`Download cancelled for "${title}" after video download, before conversion.`);
 
   const ffmpegCommand = Ffmpeg(tempVideoPath)
     .noVideo() 
@@ -183,7 +188,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
   const conversionPromise = new Promise<void>((resolve, reject) => {
     let ffmpegKilled = false;
     const checkCancellationInterval = setInterval(() => {
-        if (isCancelled()) {
+        if (operationSignal?.aborted) { // Check signal.aborted
             try {
                 if (!ffmpegKilled) {
                     ffmpegCommand.kill('SIGTERM'); 
@@ -200,7 +205,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
     ffmpegCommand
       .on('error', async (err: any, stdout: string, stderr: string) => {
         clearInterval(checkCancellationInterval);
-        if (isCancelled() || ffmpegKilled) { 
+        if (operationSignal?.aborted || ffmpegKilled) { // Check signal.aborted
              reject(new Error(`FFmpeg conversion for "${title}" was cancelled.`));
              return;
         }
@@ -225,7 +230,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
     await fsp.unlink(tempVideoPath).catch(err => console.warn(`Could not delete temp video file ${tempVideoPath}: ${err.message}`));
   }
   
-  if (isCancelled()) {
+  if (operationSignal?.aborted) { // Check signal.aborted
     await fsp.unlink(tempMp3Path).catch(err => console.warn(`Could not delete temp MP3 file ${tempMp3Path} after cancelled conversion: ${err.message}`));
     throw new Error(`Download cancelled for "${title}" during/after ffmpeg conversion.`);
   }
@@ -239,14 +244,13 @@ export async function downloadAudioAction(
   playlistItems: { url: string; title: string }[] | null, 
   isPlaylist: boolean,
   playlistTitle?: string,
-  isClientCancelledGetter?: () => boolean // Function to check if client cancelled
+  clientSignal?: AbortSignal // Accept AbortSignal directly
 ): Promise<Response | DownloadError> {
   
   const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'yt-audio-'));
-  const isCancelled = isClientCancelledGetter || (() => false); // Default to not cancelled if no getter provided
 
   try {
-    if (isCancelled()) {
+    if (clientSignal?.aborted) { // Check signal.aborted
         throw new Error("Operation cancelled by client before starting.");
     }
 
@@ -255,20 +259,20 @@ export async function downloadAudioAction(
       const playlistName = sanitizeFilename(playlistTitle || 'youtube_playlist');
 
       for (let i = 0; i < playlistItems.length; i++) {
-        if (isCancelled()) {
+        if (clientSignal?.aborted) { // Check signal.aborted
             throw new Error("Playlist processing cancelled by client during item iteration.");
         }
         const item = playlistItems[i];
         try {
-          const mp3Path = await downloadAndConvertToMp3(item.url, item.title, tempDir, isCancelled);
+          const mp3Path = await downloadAndConvertToMp3(item.url, item.title, tempDir, clientSignal); // Pass clientSignal
           const mp3Data = await fsp.readFile(mp3Path);
           zip.file(`${sanitizeFilename(item.title)}.mp3`, mp3Data);
           await fsp.unlink(mp3Path).catch(e => console.warn(`Failed to clean up ${mp3Path}: ${e.message}`));
         } catch (itemError: any) {
-           if (itemError.name === 'AbortError' || (itemError.message && itemError.message.toLowerCase().includes('cancel')) || isCancelled()) {
+           if (itemError.name === 'AbortError' || (itemError.message && itemError.message.toLowerCase().includes('cancel')) || clientSignal?.aborted) { // Check signal.aborted
             console.info(`Skipping playlist item "${item.title}" due to cancellation.`);
              zip.file(`CANCELLED_${sanitizeFilename(item.title)}.txt`, `Processing cancelled for: ${item.title}`);
-             if (isCancelled()) { 
+             if (clientSignal?.aborted) { // Check signal.aborted
                 throw new Error("Playlist processing cancelled by client."); 
              }
           } else {
@@ -279,7 +283,7 @@ export async function downloadAudioAction(
         }
       }
 
-      if (isCancelled()) {
+      if (clientSignal?.aborted) { // Check signal.aborted
         throw new Error("Playlist processing cancelled by client before zipping.");
       }
 
@@ -310,11 +314,11 @@ export async function downloadAudioAction(
       }
       const title = videoInfo.videoDetails.title;
 
-      if (isCancelled()) {
+      if (clientSignal?.aborted) { // Check signal.aborted
         throw new Error("Single video download cancelled by client before processing.");
       }
 
-      const mp3Path = await downloadAndConvertToMp3(youtubeUrl, title, tempDir, isCancelled);
+      const mp3Path = await downloadAndConvertToMp3(youtubeUrl, title, tempDir, clientSignal); // Pass clientSignal
       
       const stats = await fsp.stat(mp3Path);
       const fileStream = fs.createReadStream(mp3Path);
@@ -338,7 +342,7 @@ export async function downloadAudioAction(
       const readableStream = new ReadableStream({
         start(controller) {
           passThrough.on('data', (chunk) => {
-            if (isCancelled()) {
+            if (clientSignal?.aborted) { // Check signal.aborted
                 const abortError = new Error('Download cancelled by client during streaming.');
                 (abortError as any).name = 'AbortError';
                 controller.error(abortError);
@@ -364,15 +368,10 @@ export async function downloadAudioAction(
       
       const response = new Response(readableStream, { status: 200, headers });
       
-      // It's important to handle cleanup after the response is fully processed by the client.
-      // However, with ReadableStream, 'close' on passThrough is a good signal.
       const cleanup = async () => {
         if (!fileStream.destroyed) {
           fileStream.destroy();
         }
-        // Ensure the file isn't deleted before the client has a chance to download it.
-        // This cleanup might be too aggressive if the stream takes time.
-        // Consider a delay or alternative cleanup strategy if downloads are cut short.
         await fsp.unlink(mp3Path).catch(e => console.warn(`Could not delete temp mp3 file ${mp3Path} after stream: ${e.message}`));
       };
       
@@ -381,12 +380,15 @@ export async function downloadAudioAction(
       return response;
     }
   } catch (error: any) {
-    // This condition should now reliably catch client-initiated cancellations.
-    if (error.message?.toLowerCase().includes('cancel') || error.name === 'AbortError' || isCancelled()) {
-        console.info(`[downloadAudioAction] Operation was explicitly cancelled: ${error.message}`);
-        return { error: `Operation cancelled: ${error.message}` };
+    const clientHasAborted = clientSignal?.aborted ?? false;
+    // Check if the error is an AbortError or if the client signal indicates abortion
+    if (error.name === 'AbortError' || clientHasAborted) {
+        const cancellationMessage = clientHasAborted ? "Operation cancelled by client." : error.message;
+        console.info(`[downloadAudioAction] Operation was explicitly cancelled: ${cancellationMessage}`);
+        return { error: `Operation cancelled: ${cancellationMessage}` };
     }
 
+    // Log other errors
     await logDetailedError(error, 'downloadAudioAction main try-catch', isPlaylist && playlistTitle ? `playlist: ${playlistTitle}`: youtubeUrl);
     
     let errorMessage = "An unknown error occurred.";

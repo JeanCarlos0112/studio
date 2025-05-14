@@ -94,7 +94,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         itemsToDownload, 
         isPlaylist, 
         playlistTitle,
-        newAbortController.signal // Pass the AbortSignal
+        newAbortController.signal // Pass the AbortSignal directly
       );
 
       if (newAbortController.signal.aborted) { 
@@ -158,13 +158,17 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
       let errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
       let errorName = e instanceof Error ? e.name : "UnknownError";
 
-      if (errorName === 'AbortError' || newAbortController.signal.aborted) {
+      // Check if the abort controller signal (client-side) was aborted OR if error is AbortError
+      if (newAbortController.signal.aborted || errorName === 'AbortError') {
          if(progressDetails.stage !== 'cancelled') { 
              setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
-             toast({ title: "Download Cancelled", description: `The download process was cancelled: ${errorMessage}`, variant: "default" });
+             // Prioritize signal aborted message if that's the case
+             const cancelDesc = newAbortController.signal.aborted ? "The download process was cancelled by the user." : `The download process was aborted: ${errorMessage}`;
+             toast({ title: "Download Cancelled", description: cancelDesc, variant: "default" });
         }
       } else { 
         console.error("Download error:", e);
+        // Check if the error message from server indicates cancellation
         if (errorMessage.toLowerCase().includes("operation cancelled")) {
              setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
              toast({ title: "Download Cancelled", description: "The operation was cancelled on the server.", variant: "default" });
@@ -178,8 +182,6 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         }
       }
     } finally {
-        // Only clear the controller if it's the one we created for this download attempt.
-        // This avoids issues if a new download starts before the previous one's finally block runs.
         if (abortController === newAbortController) { 
             setAbortController(null);
         }
@@ -204,7 +206,6 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const handleCancelDownload = () => {
     if (abortController) {
       abortController.abort("User cancelled download."); 
-      // State will be updated to 'cancelled' in handleDownload's catch/finally block
     }
   };
   
