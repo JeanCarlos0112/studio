@@ -1,4 +1,3 @@
-
 // This server action handles the download of audio from a YouTube URL.
 // For single videos, it downloads the video, converts it to MP3 using ffmpeg, and streams it.
 // For playlists, it downloads each video, converts to MP3, packages them into a ZIP file, and streams the ZIP.
@@ -38,11 +37,6 @@ interface DownloadError {
   error: string;
 }
 
-const UPDATED_YTDL_REQUEST_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-};
-
 const YTDL_HIGH_WATER_MARK = 1 << 25; // 32MB buffer for the stream from ytdl
 
 // Enhanced error logging
@@ -57,7 +51,7 @@ async function logDetailedError(error: any, context: string, url: string, videoI
         console.error(`  Title: ${videoInfo.videoDetails.title}`);
         console.error(`  Is Live: ${videoInfo.videoDetails.isLiveContent}`);
     } else {
-        console.error(`Video Info: Not available or not applicable.`);
+        console.error(`Video Info: Not available (error likely occurred during getInfo).`);
     }
     if (chosenFormat) {
         console.error(`Chosen Format (if available):`);
@@ -66,7 +60,7 @@ async function logDetailedError(error: any, context: string, url: string, videoI
         console.error(`  Has Audio: ${chosenFormat.hasAudio}`);
         console.error(`  Has Video: ${chosenFormat.hasVideo}`);
     } else {
-        console.error(`Chosen Format: Not available or not applicable.`);
+        console.error(`Chosen Format: Not available (error likely occurred before format selection).`);
     }
 
     if (customData) {
@@ -102,7 +96,7 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
 
   let videoInfo: YtdlVideoInfo;
   try {
-    videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: { headers: UPDATED_YTDL_REQUEST_HEADERS }, lang: 'en' });
+    videoInfo = await ytdl.getInfo(youtubeUrl, { lang: 'en' });
   } catch (infoError: any) {
     await logDetailedError(infoError, `ytdl.getInfo for ${title}`, youtubeUrl);
     throw new Error(`Failed to get video info for "${title}": ${infoError.message || 'Unknown ytdl.getInfo error'}`);
@@ -136,7 +130,6 @@ async function downloadAndConvertToMp3(youtubeUrl: string, title: string, tempDi
 
   const videoStream = ytdl(youtubeUrl, {
     format: chosenFormat,
-    requestOptions: { headers: UPDATED_YTDL_REQUEST_HEADERS },
     highWaterMark: YTDL_HIGH_WATER_MARK,
   });
   
@@ -189,17 +182,25 @@ export async function downloadAudioAction(
   youtubeUrl: string, 
   playlistItems: { url: string; title: string }[] | null, 
   isPlaylist: boolean,
-  playlistTitle?: string
+  playlistTitle?: string,
+  clientAbortSignal?: AbortSignal // Optional client-side AbortSignal
 ): Promise<Response | DownloadError> {
   
   const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'yt-audio-'));
   
   try {
+    if (clientAbortSignal?.aborted) {
+        return { error: 'Download cancelled by client before starting.' };
+    }
+
     if (isPlaylist && playlistItems && playlistItems.length > 0) {
       const zip = new JSZip();
       const playlistName = sanitizeFilename(playlistTitle || 'youtube_playlist');
 
       for (let i = 0; i < playlistItems.length; i++) {
+        if (clientAbortSignal?.aborted) {
+            return { error: 'Download cancelled by client during playlist processing.' };
+        }
         const item = playlistItems[i];
         try {
           const mp3Path = await downloadAndConvertToMp3(item.url, item.title, tempDir);
@@ -208,10 +209,13 @@ export async function downloadAudioAction(
           await fsp.unlink(mp3Path).catch(e => console.warn(`Failed to clean up ${mp3Path}: ${e.message}`));
         } catch (itemError: any) {
           console.warn(`Skipping playlist item "${item.title}" due to error: ${itemError.message || 'Unknown error during item processing'}`);
-          // Log the detailed error for server-side inspection
           await logDetailedError(itemError, `Processing playlist item "${item.title}"`, item.url);
           zip.file(`ERROR_${sanitizeFilename(item.title)}.txt`, `Failed to process: ${itemError.message || 'Unknown error'}`);
         }
+      }
+
+      if (clientAbortSignal?.aborted) {
+        return { error: 'Download cancelled by client before sending zip.' };
       }
 
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', streamFiles: true });
@@ -231,7 +235,7 @@ export async function downloadAudioAction(
       
       let videoInfo: YtdlVideoInfo;
       try {
-        videoInfo = await ytdl.getInfo(youtubeUrl, { requestOptions: { headers: UPDATED_YTDL_REQUEST_HEADERS }, lang: 'en' });
+        videoInfo = await ytdl.getInfo(youtubeUrl, { lang: 'en' });
       } catch (e: any) {
         await logDetailedError(e, 'ytdl.getInfo for single video', youtubeUrl);
         return { error: `Failed to get video info: ${e.message || 'Unknown ytdl.getInfo error'}`};
@@ -241,6 +245,11 @@ export async function downloadAudioAction(
         return { error: `Downloading live streams is not currently supported.` };
       }
       const title = videoInfo.videoDetails.title;
+
+      if (clientAbortSignal?.aborted) {
+        return { error: 'Download cancelled by client before converting single video.' };
+      }
+
       const mp3Path = await downloadAndConvertToMp3(youtubeUrl, title, tempDir);
       
       const stats = await fsp.stat(mp3Path);
@@ -262,37 +271,76 @@ export async function downloadAudioAction(
       headers.set('Content-Type', 'audio/mpeg');
       headers.set('Content-Length', stats.size.toString());
       
-      const response = new Response(passThrough as unknown as ReadableStream, { status: 200, headers });
+      // Create a new ReadableStream from the PassThrough stream for the Response
+      const readableStream = new ReadableStream({
+        start(controller) {
+          passThrough.on('data', (chunk) => {
+            if (clientAbortSignal?.aborted) {
+              controller.error(new Error('Download cancelled by client during streaming.'));
+              passThrough.destroy();
+              fileStream.destroy();
+              return;
+            }
+            controller.enqueue(chunk);
+          });
+          passThrough.on('end', () => {
+            controller.close();
+          });
+          passThrough.on('error', (err) => {
+            controller.error(err);
+          });
+           if (clientAbortSignal) {
+            clientAbortSignal.addEventListener('abort', () => {
+              controller.error(new Error('Download cancelled by client.'));
+              passThrough.destroy();
+              fileStream.destroy();
+            });
+          }
+        },
+        cancel() {
+          passThrough.destroy();
+          fileStream.destroy();
+        }
+      });
       
+      const response = new Response(readableStream, { status: 200, headers });
+      
+      // Cleanup logic for server-side resources.
+      // This needs to be handled carefully, especially with streaming.
+      // The client closing the connection might not be directly observable here
+      // to trigger cleanup perfectly.
+      // Consider using a finalization registry or similar pattern if strict cleanup is needed
+      // upon client disconnect during streaming.
       const cleanup = () => {
         if (!fileStream.destroyed) {
-            fileStream.destroy();
+          fileStream.destroy();
         }
         fsp.unlink(mp3Path).catch(e => console.warn(`Could not delete temp mp3 file ${mp3Path} after stream: ${e.message}`));
       };
       
+      // Attempt cleanup when the PassThrough stream ends or errors.
       passThrough.on('end', cleanup);
       passThrough.on('error', cleanup); 
-      passThrough.on('close', cleanup); 
-
+      passThrough.on('close', cleanup);
 
       return response;
     }
   } catch (error: any) {
+    if (error.name === 'AbortError' || (clientAbortSignal?.aborted && error.message?.includes('cancel'))) {
+        console.info(`[downloadAudioAction] Operation was explicitly cancelled.`);
+        return { error: `Operation cancelled: ${error.message}` };
+    }
+
     await logDetailedError(error, 'downloadAudioAction main try-catch', isPlaylist && playlistTitle ? `playlist: ${playlistTitle}`: youtubeUrl);
     let errorMessage = "An unknown error occurred.";
-    if (error instanceof Error) { // Standard Error object
+    if (error instanceof Error) { 
         errorMessage = error.message;
-    } else if (typeof error === 'string') { // Plain string error
+    } else if (typeof error === 'string') { 
         errorMessage = error;
-    } else if (error && typeof error.message === 'string') { // Object with a message property
+    } else if (error && typeof error.message === 'string') { 
         errorMessage = error.message;
     }
     
-    // Check for cancellation specifically
-    if (errorMessage.toLowerCase().includes('aborted') || errorMessage.toLowerCase().includes('cancel') || (error as any)?.name === 'AbortError') {
-        return { error: `Operation cancelled: ${errorMessage}` };
-    }
     return { error: errorMessage };
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(err => console.warn(`Failed to remove temp directory ${tempDir}: ${err.message}`));

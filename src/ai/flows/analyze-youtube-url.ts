@@ -1,4 +1,3 @@
-
 // This is an AI-powered function to analyze a YouTube URL and determine its content type.
 // It identifies whether the URL points to a single video, a playlist, or mixed content.
 // It also attempts to fetch the title and thumbnail for videos and playlists, and video items for playlists.
@@ -64,19 +63,6 @@ const analyzeYoutubeUrlPrompt = ai.definePrompt({
   }
 });
 
-const UPDATED_YTDL_REQUEST_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-};
-
-const COMMON_REQUEST_OPTIONS_FOR_GET_INFO = {
-    headers: UPDATED_YTDL_REQUEST_HEADERS,
-};
-
-const COMMON_YTPL_REQUEST_OPTIONS = {
-    headers: UPDATED_YTDL_REQUEST_HEADERS,
-};
-
 
 const analyzeYoutubeUrlFlow = ai.defineFlow(
   {
@@ -96,7 +82,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                 const playlistId = await ytpl.getPlaylistID(input.url);
                 if (!ytpl.validateID(playlistId)) {
                     if (ytdl.validateURL(input.url)) {
-                        const info = await ytdl.getInfo(input.url, { requestOptions: COMMON_REQUEST_OPTIONS_FOR_GET_INFO, lang: 'en' });
+                        const info = await ytdl.getInfo(input.url, { lang: 'en' });
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
@@ -105,7 +91,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                         outputData.type = 'unknown';
                     }
                 } else {
-                    const playlistInfo = await ytpl(playlistId, { limit: Infinity, requestOptions: COMMON_YTPL_REQUEST_OPTIONS });
+                    const playlistInfo = await ytpl(playlistId, { limit: Infinity });
                     outputData.title = playlistInfo.title;
                     outputData.thumbnailUrl = playlistInfo.thumbnails?.[0]?.url;
                     outputData.playlistAuthor = playlistInfo.author?.name;
@@ -122,7 +108,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
             } catch (playlistError) {
                 if (ytdl.validateURL(input.url)) {
                     try {
-                        const info = await ytdl.getInfo(input.url, { requestOptions: COMMON_REQUEST_OPTIONS_FOR_GET_INFO, lang: 'en' });
+                        const info = await ytdl.getInfo(input.url, { lang: 'en' });
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
                         outputData.type = 'single';
@@ -137,7 +123,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                 }
             }
         } else if (ytdl.validateURL(input.url)) {
-            const info = await ytdl.getInfo(input.url, { requestOptions: COMMON_REQUEST_OPTIONS_FOR_GET_INFO, lang: 'en' });
+            const info = await ytdl.getInfo(input.url, { lang: 'en' });
             outputData.title = info.videoDetails.title;
             outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
             outputData.type = 'single';

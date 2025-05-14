@@ -1,4 +1,3 @@
-
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -9,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare, RadioTower, Package } from 'lucide-react'; // Removed Settings2
+import { FileVideo, ListVideo, AlertCircle, CheckCircle2, XCircle, Download, Loader2, PlaySquare, RadioTower, Package } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 import Image from 'next/image';
 
@@ -47,7 +46,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
   const resetStates = useCallback(() => {
     setProgressDetails({ stage: 'idle', overallPercentage: 0 });
     if (abortController) {
-      abortController.abort(); 
+      abortController.abort("Component re-render or new analysis."); 
       setAbortController(null);
     }
   }, [abortController]); 
@@ -94,13 +93,11 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         primaryUrl, 
         itemsToDownload, 
         isPlaylist, 
-        playlistTitle
-        // newAbortController.signal was removed here
+        playlistTitle,
+        newAbortController.signal // Pass the AbortSignal
       );
 
-      if (newAbortController.signal.aborted) { // Check client-side controller
-        // This might be redundant if the fetch itself throws an AbortError,
-        // but good for explicit client-side cancellation detection.
+      if (newAbortController.signal.aborted) { 
         if(progressDetails.stage !== 'cancelled') {
             setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
             toast({ title: "Download Cancelled", description: "The download process was cancelled by the user.", variant: "default" });
@@ -164,7 +161,7 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
       if (errorName === 'AbortError' || newAbortController.signal.aborted) {
          if(progressDetails.stage !== 'cancelled') { 
              setProgressDetails({ stage: 'cancelled', overallPercentage: 0 });
-             toast({ title: "Download Cancelled", description: "The download process was cancelled.", variant: "default" });
+             toast({ title: "Download Cancelled", description: `The download process was cancelled: ${errorMessage}`, variant: "default" });
         }
       } else { 
         console.error("Download error:", e);
@@ -181,6 +178,8 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
         }
       }
     } finally {
+        // Only clear the controller if it's the one we created for this download attempt.
+        // This avoids issues if a new download starts before the previous one's finally block runs.
         if (abortController === newAbortController) { 
             setAbortController(null);
         }
@@ -204,7 +203,8 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
 
   const handleCancelDownload = () => {
     if (abortController) {
-      abortController.abort(); 
+      abortController.abort("User cancelled download."); 
+      // State will be updated to 'cancelled' in handleDownload's catch/finally block
     }
   };
   
@@ -411,4 +411,3 @@ export function DownloadArea({ analysisResult, youtubeUrl }: DownloadAreaProps) 
     </Card>
   );
 }
-
