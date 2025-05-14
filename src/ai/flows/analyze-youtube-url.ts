@@ -66,7 +66,7 @@ const analyzeYoutubeUrlPrompt = ai.definePrompt({
 const COMMON_REQUEST_OPTIONS = {
   requestOptions: {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     },
   },
 };
@@ -85,11 +85,11 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
     let outputData: AnalyzeYoutubeUrlOutput = { type: typeFromLlm };
 
     try {
-        if (ytpl.validateID(input.url) || input.url.includes('list=')) { 
+        if (ytpl.validateID(input.url) || input.url.includes('list=')) {
             try {
                 const playlistId = await ytpl.getPlaylistID(input.url);
                 if (!ytpl.validateID(playlistId)) {
-                    if (ytdl.validateURL(input.url)) { 
+                    if (ytdl.validateURL(input.url)) {
                         const info = await ytdl.getInfo(input.url, COMMON_REQUEST_OPTIONS);
                         outputData.title = info.videoDetails.title;
                         outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
@@ -112,7 +112,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                     }));
                     outputData.type = 'playlist';
                     // A playlist itself is not "live", individual items might be, but ytpl doesn't give that info.
-                    outputData.isLive = false; 
+                    outputData.isLive = false;
                 }
             } catch (playlistError) {
                 if (ytdl.validateURL(input.url)) {
@@ -131,13 +131,13 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
                     outputData.type = 'unknown';
                 }
             }
-        } else if (ytdl.validateURL(input.url)) { 
+        } else if (ytdl.validateURL(input.url)) {
             const info = await ytdl.getInfo(input.url, COMMON_REQUEST_OPTIONS);
             outputData.title = info.videoDetails.title;
             outputData.thumbnailUrl = info.videoDetails.thumbnails?.sort((a, b) => b.width - a.width)[0]?.url;
             outputData.type = 'single';
             outputData.isLive = info.videoDetails.isLiveContent;
-        } else { 
+        } else {
             outputData.type = typeFromLlm !== 'single' && typeFromLlm !== 'playlist' ? typeFromLlm : 'unknown';
         }
     } catch (e) {
@@ -161,7 +161,7 @@ const analyzeYoutubeUrlFlow = ai.defineFlow(
 
 
     if (outputData.type === 'single' && !outputData.title) {
-        outputData.type = 'unknown'; 
+        outputData.type = 'unknown';
     }
     
     if (outputData.type === 'unknown' && (outputData.title || (outputData.videoItems && outputData.videoItems.length > 0))) {

@@ -31,7 +31,7 @@ interface DownloadError {
 const YTDL_REQUEST_OPTIONS = {
   requestOptions: {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     },
   },
   // Consider adding highWaterMark here if issues persist with large files, though it's for the stream itself
@@ -122,3 +122,4 @@ export async function downloadAudioAction(youtubeUrl: string, customTitle?: stri
     return { error: errorMessage };
   }
 }
+
